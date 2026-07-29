@@ -164,6 +164,9 @@ private:
     // Layout inline children (flow horizontally with wrapping)
     void layout_inline_children(Box& parent_box, const Node& parent_node, float available_width);
 
+    // Layout inline content within a block (word wrapping)
+    void layout_inline_content(Box& parent_box, const Node& parent_node, float available_width);
+
     // Parse a CSS length value (px, em, %, etc.)
     // TEACHING NOTE: CSS length values can be in different units:
     //   - px: pixels (device-dependent)
@@ -194,6 +197,7 @@ private:
     // metrics, kerning, ligatures, and complex script handling. We
     // use a simple character count times average character width.
     float text_width(const std::string& text) const;
+    float text_width(const std::string& text, float font_size) const;
 
     // Estimate text height (line height)
     float line_height() const { return 20.0f; }  // Simple default

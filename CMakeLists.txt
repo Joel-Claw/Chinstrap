@@ -117,6 +117,7 @@ file(GLOB CHINSTRAP_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_js_interpreter.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_zlib.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_font.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_font_render.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_image.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dns.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cookies.cpp"

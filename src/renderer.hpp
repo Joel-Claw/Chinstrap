@@ -223,6 +223,9 @@ private:
     std::unique_ptr<class Font> ttf_font_;
     bool ttf_available_ = false;
 
+    // Current font size for text rendering (from CSS font-size)
+    int current_font_size_ = 16;
+
     // URL to display in the browser UI frame (for screenshots)
     std::string screenshot_url_;
 

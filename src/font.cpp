@@ -977,7 +977,7 @@ GlyphBitmap Font::rasterize_outline(
     bitmap.width = width;
     bitmap.height = height;
     bitmap.x_offset = min_x;
-    bitmap.y_offset = -max_y;  // Y is flipped (font coords go up, bitmap goes down)
+    bitmap.y_offset = -max_y;  // Position relative to baseline (font Y-up to screen Y-down)
     bitmap.pixels.resize((size_t)width * height, 0);
 
     // TEACHING NOTE: Anti-aliasing via supersampling
@@ -1006,11 +1006,16 @@ GlyphBitmap Font::rasterize_outline(
         }
 
         // Average and convert to 0-255
+        // Flip rows: font coords have Y going up (min_y at bottom),
+        // but bitmap rows go top-to-bottom (row 0 = top of glyph = max_y).
+        // So we store row 0 (which rasterizes at min_y + row = min_y)
+        // at the BOTTOM of the bitmap, and the last row at the top.
+        int flipped_row = height - 1 - row;
         for (int x = 0; x < width; ++x) {
             float avg = coverage[x] / AA_SAMPLES;
             if (avg < 0.0f) avg = 0.0f;
             if (avg > 1.0f) avg = 1.0f;
-            bitmap.pixels[(size_t)row * width + x] = (uint8_t)(avg * 255.0f + 0.5f);
+            bitmap.pixels[(size_t)flipped_row * width + x] = (uint8_t)(avg * 255.0f + 0.5f);
         }
     }
 

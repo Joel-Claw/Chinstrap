@@ -84,6 +84,16 @@ float LayoutEngine::parse_length(const std::string& value, float reference, floa
         if (unit == "%" || unit == "percent") {
             return (num / 100.0f) * reference;
         }
+        if (unit == "vw") {
+            return (num / 100.0f) * viewport_width_;
+        }
+        if (unit == "vh") {
+            return (num / 100.0f) * viewport_height_;
+        }
+        if (unit == "em" || unit == "rem") {
+            // Approximate: 1em = 16px (default font size)
+            return num * 16.0f;
+        }
         // px, or unitless, or any other unit we treat as pixels
         return num;
     } catch (...) {
@@ -142,6 +152,12 @@ float LayoutEngine::text_width(const std::string& text) const {
     // average character width of 8 pixels (for a 16px font).
     // This affects text wrapping accuracy.
     return static_cast<float>(text.size()) * 8.0f;
+}
+
+float LayoutEngine::text_width(const std::string& text, float font_size) const {
+    // Estimate character width as 0.55 * font_size (average for Latin text)
+    float char_width = font_size * 0.55f;
+    return static_cast<float>(text.size()) * char_width;
 }
 
 std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float y, float available_width) {
@@ -218,27 +234,55 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
 
     // Determine if block or inline
     std::string display = get_display(node);
+
+    // Handle display: none - do not render
+    if (display == "none") {
+        box->type = Box::Type::Block;
+        box->width = 0;
+        box->height = 0;
+        return box;
+    }
+
     box->type = (display == "block") ? Box::Type::Block : Box::Type::Inline;
 
     // Parse box model values
     // TEACHING NOTE: We read margin, padding, and border from the
     // computed style. Each can be specified as 1-4 values (top right
     // bottom left). We simplify by reading each edge separately.
-    box->margin = parse_edges(
-        style.count("margin-top") ? style.at("margin-top") : "0",
-        style.count("margin-right") ? style.at("margin-right") : "0",
-        style.count("margin-bottom") ? style.at("margin-bottom") : "0",
-        style.count("margin-left") ? style.at("margin-left") : "0",
-        available_width
-    );
+    // If the shorthand property (margin, padding) is set, expand it.
+    auto expand_shorthand = [](const ComputedStyle& st, const std::string& base) -> std::vector<std::string> {
+        // Returns [top, right, bottom, left]
+        std::string top = "0", right = "0", bottom = "0", left = "0";
+        // Try individual properties first
+        if (st.count(base + "-top")) top = st.at(base + "-top");
+        if (st.count(base + "-right")) right = st.at(base + "-right");
+        if (st.count(base + "-bottom")) bottom = st.at(base + "-bottom");
+        if (st.count(base + "-left")) left = st.at(base + "-left");
+        // If shorthand is set, parse and expand it
+        if (st.count(base)) {
+            std::istringstream ss(st.at(base));
+            std::vector<std::string> parts;
+            std::string part;
+            while (ss >> part) parts.push_back(part);
+            if (parts.size() == 1) {
+                top = right = bottom = left = parts[0];
+            } else if (parts.size() == 2) {
+                top = bottom = parts[0];
+                right = left = parts[1];
+            } else if (parts.size() == 3) {
+                top = parts[0]; right = left = parts[1]; bottom = parts[2];
+            } else if (parts.size() >= 4) {
+                top = parts[0]; right = parts[1]; bottom = parts[2]; left = parts[3];
+            }
+        }
+        return {top, right, bottom, left};
+    };
 
-    box->padding = parse_edges(
-        style.count("padding-top") ? style.at("padding-top") : "0",
-        style.count("padding-right") ? style.at("padding-right") : "0",
-        style.count("padding-bottom") ? style.at("padding-bottom") : "0",
-        style.count("padding-left") ? style.at("padding-left") : "0",
-        available_width
-    );
+    auto margin_parts = expand_shorthand(style, "margin");
+    box->margin = parse_edges(margin_parts[0], margin_parts[1], margin_parts[2], margin_parts[3], available_width);
+
+    auto padding_parts = expand_shorthand(style, "padding");
+    box->padding = parse_edges(padding_parts[0], padding_parts[1], padding_parts[2], padding_parts[3], available_width);
 
     // Parse border width from the border shorthand
     // TEACHING NOTE: Border values look like "1px solid black".
@@ -268,14 +312,36 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
     // TEACHING NOTE: If width is specified, use it. Otherwise, block
     // elements default to 100% of available width, inline elements
     // size to their content.
+    bool has_explicit_width = false;
     if (style.count("width") && style.at("width") != "auto") {
         box->width = parse_length(style.at("width"), available_width, available_width);
+        has_explicit_width = true;
     } else if (box->type == Box::Type::Block) {
         box->width = available_width - box->margin.left - box->margin.right
                      - box->border.left - box->border.right
                      - box->padding.left - box->padding.right;
     } else {
         box->width = available_width;  // Inline: will be adjusted by content
+    }
+
+    // Auto margin centering for block elements with explicit width
+    if (has_explicit_width && box->type == Box::Type::Block) {
+        float remaining = available_width - box->outer_width();
+        if (remaining > 0) {
+            // Check if left and/or right margins are auto
+            std::string ml = margin_parts[3];  // left
+            std::string mr = margin_parts[1];  // right
+            bool left_auto = (ml == "auto");
+            bool right_auto = (mr == "auto");
+            if (left_auto && right_auto) {
+                box->margin.left = remaining / 2.0f;
+                box->margin.right = remaining / 2.0f;
+            } else if (left_auto) {
+                box->margin.left = remaining;
+            } else if (right_auto) {
+                box->margin.right = remaining;
+            }
+        }
     }
 
     // Parse height
@@ -308,10 +374,110 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
     return box;
 }
 
+void LayoutEngine::layout_inline_content(Box& parent_box, const Node& parent_node, float available_width) {
+    // TEACHING NOTE: This handles inline formatting context for block
+    // elements that contain text (like <p>, <h1>, <div> with text).
+    // Words flow left to right and wrap at the available width.
+    float current_y = parent_box.padding.top;
+    float current_x = parent_box.padding.left;
+    float max_width = available_width - parent_box.padding.left - parent_box.padding.right;
+    if (max_width < 1.0f) max_width = 1.0f;
+
+    // Get font-size from computed style
+    ComputedStyle style = StyleEngine::get_computed_style(parent_node);
+    float font_size = 16.0f;  // Default
+    auto fs_it = style.find("font-size");
+    if (fs_it != style.end()) {
+        font_size = parse_length(fs_it->second, 16.0f, 16.0f);
+        if (font_size < 4.0f) font_size = 4.0f;
+    }
+    float lh = font_size * 1.2f;  // 1.2 line-height ratio
+
+    // Collect visible text content
+    std::string text = parent_node.visible_text();
+
+    // Simple word wrapping
+    std::istringstream words(text);
+    std::string word;
+
+    while (words >> word) {
+        float word_width = text_width(word, font_size);
+        float space_width = text_width(" ", font_size);
+
+        if (current_x + word_width > max_width && current_x > parent_box.padding.left) {
+            // Wrap to next line
+            current_y += lh;
+            current_x = parent_box.padding.left;
+        }
+
+        // Create a text box for this word
+        auto word_box = std::make_unique<Box>();
+        word_box->type = Box::Type::Text;
+        word_box->node = &parent_node;
+        word_box->text = word;
+        word_box->x = current_x;
+        word_box->y = current_y;
+        word_box->width = word_width;
+        word_box->height = lh;
+        parent_box.children.push_back(std::move(word_box));
+
+        current_x += word_width + space_width;
+    }
+
+    // Update parent height to encompass all lines
+    if (!parent_box.children.empty()) {
+        parent_box.height = current_y + lh + parent_box.padding.bottom;
+    }
+}
+
 void LayoutEngine::layout_block_children(Box& parent_box, const Node& parent_node) {
     // TEACHING NOTE: Block children stack vertically. Each child is
     // placed below the previous one. The available width is the
     // parent content width.
+    //
+    // However, if a block element contains only inline content (text
+    // nodes and inline elements), we need to use inline formatting:
+    // words flow left to right and wrap at the available width.
+    // This is how <p>, <h1>, <div> etc. render their text content.
+
+    // First, check if all children are inline (text nodes or inline elements)
+    bool has_block = false;
+    bool has_inline = false;
+    for (const auto& child : parent_node.children) {
+        if (child->type == NodeType::Comment) continue;
+        if (child->type == NodeType::Text) {
+            // Check if it is just whitespace
+            bool all_space = true;
+            for (char c : child->text_content) {
+                if (!std::isspace(static_cast<unsigned char>(c))) {
+                    all_space = false;
+                    break;
+                }
+            }
+            if (!all_space) has_inline = true;
+        } else if (child->type == NodeType::Element) {
+            if (child->tag_name == "script" || child->tag_name == "style" ||
+                child->tag_name == "head" || child->tag_name == "title" ||
+                child->tag_name == "meta" || child->tag_name == "link" ||
+                child->tag_name == "noscript") {
+                continue;
+            }
+            if (is_block(*child)) {
+                has_block = true;
+            } else {
+                has_inline = true;
+            }
+        }
+    }
+
+    // If we have inline content and no block content, use inline formatting
+    if (has_inline && !has_block) {
+        layout_inline_content(parent_box, parent_node, parent_box.width);
+        return;
+    }
+
+    // Mixed or block-only: lay out children as blocks, but collect
+    // consecutive inline content into anonymous inline blocks
     float current_y = parent_box.padding.top;
     float content_width = parent_box.width;
     float content_x = parent_box.padding.left;
@@ -353,55 +519,7 @@ void LayoutEngine::layout_inline_children(Box& parent_box, const Node& parent_no
     // text block. This does not handle mixed inline elements correctly
     // (e.g., <p>text <b>bold</b> more text</p>) but handles the common
     // case of paragraphs with text.
-
-    float current_y = parent_box.padding.top;
-    float current_x = parent_box.padding.left;
-    float max_width = available_width - parent_box.padding.left - parent_box.padding.right;
-
-    // Collect visible text content and wrap
-    // TEACHING NOTE: We use visible_text() instead of text() because
-    // text() recursively collects ALL text including JavaScript inside
-    // <script> and CSS inside <style>. visible_text() skips those
-    // elements so raw code does not leak into the rendered page.
-    std::string text = parent_node.visible_text();
-
-    // Simple word wrapping
-    // TEACHING NOTE: We split text into words and place them one by one.
-    // When a word does not fit on the current line, we wrap to the next
-    // line. This is a greedy algorithm and does not handle hyphenation
-    // or CJK text (which does not use spaces for word boundaries).
-    std::istringstream words(text);
-    std::string word;
-    float line_height = this->line_height();
-
-    while (words >> word) {
-        float word_width = text_width(word);
-        float space_width = text_width(" ");
-
-        if (current_x + word_width > max_width && current_x > parent_box.padding.left) {
-            // Wrap to next line
-            current_y += line_height;
-            current_x = parent_box.padding.left;
-        }
-
-        // Create a text box for this word
-        auto word_box = std::make_unique<Box>();
-        word_box->type = Box::Type::Text;
-        word_box->node = &parent_node;
-        word_box->text = word;
-        word_box->x = current_x;
-        word_box->y = current_y;
-        word_box->width = word_width;
-        word_box->height = line_height;
-        parent_box.children.push_back(std::move(word_box));
-
-        current_x += word_width + space_width;
-    }
-
-    // Update parent height
-    if (current_y + line_height > parent_box.height) {
-        parent_box.height = current_y + line_height + parent_box.padding.bottom;
-    }
+    layout_inline_content(parent_box, parent_node, available_width);
 }
 
 } // namespace chinstrap

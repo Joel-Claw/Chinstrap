@@ -1176,7 +1176,14 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderColo
     if (ttf_available_ && ttf_font_) {
         // TTF rendering path: rasterize each glyph and blit it
         int pen_x = x;
-        int pixel_size = 16;  // 16px font size for body text
+        int pixel_size = current_font_size_;  // Font size from CSS
+
+        // Compute baseline: y is the top of the text box.
+        // baseline = top + ascent_pixels
+        float scale = static_cast<float>(pixel_size) /
+                      static_cast<float>(ttf_font_->get_units_per_em());
+        int ascent_px = static_cast<int>(static_cast<float>(ttf_font_->get_ascent()) * scale);
+        int baseline_y = y + ascent_px;
 
         for (std::size_t i = 0; i < text.size(); i++) {
             unsigned char ch = static_cast<unsigned char>(text[i]);
@@ -1186,6 +1193,8 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderColo
             GlyphBitmap bitmap = ttf_font_->rasterize_glyph(glyph_index, pixel_size);
 
             // Blit the glyph bitmap to the framebuffer
+            // bitmap.y_offset is relative to baseline (negative = above baseline)
+            // bitmap rows are top-to-bottom (row 0 = top of glyph)
             for (int row = 0; row < bitmap.height; row++) {
                 for (int col = 0; col < bitmap.width; col++) {
                     uint8_t coverage = bitmap.pixels[static_cast<std::size_t>(row) * bitmap.width + col];
@@ -1199,7 +1208,7 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderColo
                         }
                         put_pixel_internal(
                             pen_x + bitmap.x_offset + col,
-                            y + bitmap.y_offset + row,
+                            baseline_y + bitmap.y_offset + row,
                             blended);
                     }
                 }
@@ -1246,7 +1255,7 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderColo
         // TTF path: truncate based on TTF text width
         int total_width = 0;
         std::size_t chars_that_fit = 0;
-        int pixel_size = 16;
+        int pixel_size = current_font_size_;
         for (std::size_t i = 0; i < text.size(); i++) {
             unsigned char ch = static_cast<unsigned char>(text[i]);
             if (ch >= 128) ch = '?';
@@ -1298,10 +1307,28 @@ void Renderer::render_box(const Box& box, int offset_x, int offset_y) {
     int w = static_cast<int>(box.width);
     int h = static_cast<int>(box.height);
 
-    // Draw background
-    RenderColor bg = get_color_style(box, "background-color", RenderColor::transparent());
+    // Content area position (inside margin, border, padding)
+    int content_x = abs_x + static_cast<int>(box.margin.left + box.border.left + box.padding.left);
+    int content_y = abs_y + static_cast<int>(box.margin.top + box.border.top + box.padding.top);
+    int content_w = w - static_cast<int>(box.padding.right + box.border.right);
+    if (content_w < 1) content_w = 1;
+
+    // Draw background (in the border area, inside margin)
+    // Check background shorthand first, then background-color
+    RenderColor bg = RenderColor::transparent();
+    std::string bg_shorthand = box.get_style("background");
+    if (!bg_shorthand.empty() && bg_shorthand != "none") {
+        bg = RenderColor::parse(bg_shorthand);
+    }
+    if (bg.a == 0) {
+        bg = get_color_style(box, "background-color", RenderColor::transparent());
+    }
     if (bg.a > 0) {
-        fill_rect(abs_x, abs_y, w, h, bg);
+        int bg_x = abs_x + static_cast<int>(box.margin.left);
+        int bg_y = abs_y + static_cast<int>(box.margin.top);
+        int bg_w = w + static_cast<int>(box.padding.left + box.padding.right + box.border.left + box.border.right);
+        int bg_h = h + static_cast<int>(box.padding.top + box.padding.bottom + box.border.top + box.border.bottom);
+        fill_rect(bg_x, bg_y, bg_w, bg_h, bg);
     }
 
 
@@ -1318,12 +1345,27 @@ void Renderer::render_box(const Box& box, int offset_x, int offset_y) {
                 bw = static_cast<int>(std::stof(token));
             }
         }
-        draw_rect(abs_x, abs_y, w, h, bw, border_color);
+        int border_x = abs_x + static_cast<int>(box.margin.left);
+        int border_y = abs_y + static_cast<int>(box.margin.top);
+        int border_w = w + static_cast<int>(box.padding.left + box.padding.right + box.border.left + box.border.right);
+        int border_h = h + static_cast<int>(box.padding.top + box.padding.bottom + box.border.top + box.border.bottom);
+        draw_rect(border_x, border_y, border_w, border_h, bw, border_color);
     }
 
     // Draw text
     if (box.type == Box::Type::Text && !box.text.empty()) {
         RenderColor text_color = get_color_style(box, "color", RenderColor::black());
+
+        // Set font size from CSS
+        std::string font_size_str = box.get_style("font-size");
+        if (!font_size_str.empty()) {
+            float fs = static_cast<float>(std::atof(font_size_str.c_str()));
+            if (fs > 4.0f && fs < 200.0f) {
+                current_font_size_ = static_cast<int>(fs);
+            }
+        } else {
+            current_font_size_ = 16;  // Default
+        }
 
         // Check if this box has a different font-family and switch fonts
         // TEACHING NOTE: We check the CSS font-family property and load
@@ -1381,12 +1423,20 @@ void Renderer::render_box(const Box& box, int offset_x, int offset_y) {
             }
         }
 
-        draw_text(abs_x, abs_y, box.text, text_color, w);
+        // For text boxes (word boxes from inline layout), use a large max width
+        // to avoid truncation since the layout engine already handles wrapping
+        int text_max_w = static_cast<int>(box.width);
+        if (text_max_w < 1) text_max_w = content_w;
+        // Add generous padding to avoid cutting off last character
+        text_max_w += 16;
+        draw_text(content_x, content_y, box.text, text_color, text_max_w);
     }
 
     // Recurse into children
+    // TEACHING NOTE: Children are positioned relative to the content area
+    // of the parent, so we pass the content origin as the offset.
     for (const auto& child : box.children) {
-        render_box(*child, abs_x, abs_y);
+        render_box(*child, content_x, content_y);
     }
 }
 

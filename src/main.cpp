@@ -157,6 +157,84 @@ static std::string extract_embedded_css(const chinstrap::Node& root) {
 }
 
 // =========================================================================
+// get_user_agent_stylesheet - Basic browser default styles
+// =========================================================================
+// TEACHING NOTE: Every browser has a user agent (UA) stylesheet that
+// provides default styling for HTML elements. Without it, elements
+// like h1 and p would have no margins, no font size differences, and
+// no visual distinction. We define a minimal UA stylesheet here.
+
+static std::string get_user_agent_stylesheet() {
+    return std::string(
+        // Body defaults
+        "body { display: block; margin: 8px; color: black; "
+        "background-color: white; font-size: 16px; line-height: 1.2; }\n"
+        // Headings
+        "h1 { display: block; font-size: 32px; margin-top: 21px; "
+        "margin-bottom: 21px; font-weight: bold; }\n"
+        "h2 { display: block; font-size: 24px; margin-top: 19px; "
+        "margin-bottom: 19px; font-weight: bold; }\n"
+        "h3 { display: block; font-size: 19px; margin-top: 18px; "
+        "margin-bottom: 18px; font-weight: bold; }\n"
+        "h4 { display: block; font-size: 16px; margin-top: 21px; "
+        "margin-bottom: 21px; font-weight: bold; }\n"
+        "h5 { display: block; font-size: 13px; margin-top: 22px; "
+        "margin-bottom: 22px; font-weight: bold; }\n"
+        "h6 { display: block; font-size: 11px; margin-top: 25px; "
+        "margin-bottom: 25px; font-weight: bold; }\n"
+        // Paragraphs
+        "p { display: block; margin-top: 16px; margin-bottom: 16px; }\n"
+        // Divs and sections
+        "div { display: block; }\n"
+        "section { display: block; }\n"
+        "article { display: block; }\n"
+        "header { display: block; }\n"
+        "footer { display: block; }\n"
+        "nav { display: block; }\n"
+        "main { display: block; }\n"
+        // Lists
+        "ul { display: block; margin-top: 16px; margin-bottom: 16px; "
+        "padding-left: 40px; }\n"
+        "ol { display: block; margin-top: 16px; margin-bottom: 16px; "
+        "padding-left: 40px; }\n"
+        "li { display: block; }\n"
+        // Inline elements
+        "a { display: inline; color: blue; text-decoration: underline; }\n"
+        "span { display: inline; }\n"
+        "em { display: inline; font-style: italic; }\n"
+        "strong { display: inline; font-weight: bold; }\n"
+        "b { display: inline; font-weight: bold; }\n"
+        "i { display: inline; font-style: italic; }\n"
+        "code { display: inline; font-family: monospace; }\n"
+        "pre { display: block; font-family: monospace; "
+        "margin-top: 16px; margin-bottom: 16px; }\n"
+        // Other block elements
+        "blockquote { display: block; margin-top: 16px; margin-bottom: 16px; "
+        "padding-left: 20px; }\n"
+        "hr { display: block; border: 1px solid black; height: 0; }\n"
+        // Images
+        "img { display: inline; }\n"
+        // Table elements
+        "table { display: block; }\n"
+        "tr { display: block; }\n"
+        "td { display: block; padding: 1px; }\n"
+        "th { display: block; padding: 1px; font-weight: bold; }\n"
+        // Forms
+        "form { display: block; }\n"
+        "input { display: inline; }\n"
+        "button { display: inline; }\n"
+        // Meta elements (hidden)
+        "script { display: none; }\n"
+        "style { display: none; }\n"
+        "head { display: none; }\n"
+        "title { display: none; }\n"
+        "meta { display: none; }\n"
+        "link { display: none; }\n"
+        "noscript { display: none; }\n"
+    );
+}
+
+// =========================================================================
 // detect_display_backend - Auto-detect the best available display backend
 // =========================================================================
 // TEACHING NOTE: Display backend auto-detection
@@ -313,14 +391,32 @@ int main(int argc, char* argv[]) {
     // parse it into a Stylesheet. Then we apply the styles to the DOM
     // tree using the cascade algorithm.
     std::cout << "[4/6] Parsing CSS..." << std::endl;
+
+    // Parse user agent stylesheet (browser defaults)
+    // TEACHING NOTE: The UA stylesheet provides default styles for HTML
+    // elements. It is merged with the author stylesheet so that author
+    // rules override UA defaults through the cascade.
+    std::string ua_css = get_user_agent_stylesheet();
+    chinstrap::CssParser ua_parser(ua_css);
+    chinstrap::Stylesheet ua_stylesheet = ua_parser.parse();
+
+    // Parse author stylesheet (page CSS)
     std::string css_text = extract_embedded_css(*document);
     chinstrap::CssParser css_parser(css_text);
     chinstrap::Stylesheet stylesheet = css_parser.parse();
 
-    std::cout << "  Parsed " << stylesheet.rules.size() << " CSS rules" << std::endl;
+    // Merge UA and author stylesheets (UA first = lower priority)
+    chinstrap::Stylesheet combined;
+    for (const auto& rule : ua_stylesheet.rules)
+        combined.rules.push_back(rule);
+    for (const auto& rule : stylesheet.rules)
+        combined.rules.push_back(rule);
 
-    // Apply styles to the DOM
-    chinstrap::StyleEngine::apply_styles(stylesheet, *document);
+    std::cout << "  Parsed " << stylesheet.rules.size() << " CSS rules ("
+              << ua_stylesheet.rules.size() << " UA)" << std::endl;
+
+    // Apply combined styles to the DOM
+    chinstrap::StyleEngine::apply_styles(combined, *document);
 
     // Step 5: Layout
     // TEACHING NOTE: Layout computes the position and size of every
