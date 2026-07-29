@@ -293,7 +293,7 @@ SimpleSelector CssParser::parse_simple_selector() {
                        sel.tag_name.begin(), [](unsigned char c) { return std::tolower(c); });
     }
 
-    // Parse classes and IDs
+    // Parse classes, IDs, and pseudo-classes
     while (!at_end()) {
         if (peek() == '.') {
             pos_++;
@@ -301,6 +301,11 @@ SimpleSelector CssParser::parse_simple_selector() {
         } else if (peek() == '#') {
             pos_++;
             sel.id = parse_identifier();
+        } else if (peek() == ':') {
+            // Skip pseudo-class or pseudo-element (e.g., :hover, :link, ::before)
+            pos_++;
+            if (peek() == ':') pos_++;  // pseudo-element (::)
+            parse_identifier();  // skip the pseudo-class name
         } else {
             break;
         }
