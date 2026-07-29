@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Chinstrap app icon (simplified) -->
+  <!-- CC0 Public Domain -->
+  <circle cx="128" cy="128" r="125" fill="#0033AA"/>
+  
+  <!-- Penguin body -->
+  <ellipse cx="128" cy="150" rx="60" ry="80" fill="#1a1a1a"/>
+  
+  <!-- White belly -->
+  <ellipse cx="128" cy="155" rx="42" ry="65" fill="#f5f5f5"/>
+  
+  <!-- Head -->
+  <circle cx="128" cy="80" r="40" fill="#1a1a1a"/>
+  
+  <!-- White face -->
+  <ellipse cx="128" cy="88" rx="28" ry="30" fill="#f5f5f5"/>
+  
+  <!-- Chinstrap line -->
+  <path d="M 98 85 Q 128 100 158 85" fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round"/>
+  
+  <!-- Eyes -->
+  <circle cx="115" cy="75" r="4" fill="#1a1a1a"/>
+  <circle cx="141" cy="75" r="4" fill="#1a1a1a"/>
+  
+  <!-- Beak -->
+  <path d="M 123 88 L 133 88 L 128 97 Z" fill="#f5a623"/>
+  
+  <!-- Feet -->
+  <ellipse cx="108" cy="228" rx="20" ry="9" fill="#f5a623"/>
+  <ellipse cx="148" cy="228" rx="20" ry="9" fill="#f5a623"/>
+</svg>
