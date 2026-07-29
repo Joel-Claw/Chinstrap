@@ -18,6 +18,7 @@
 #include "renderer.hpp"
 #include "layout.hpp"
 #include "css_parser.hpp"
+#include "font.hpp"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -32,6 +33,7 @@
 #include <iostream>
 #include <algorithm>
 #include <functional>
+#include <sys/stat.h>
 
 namespace chinstrap {
 
@@ -137,18 +139,17 @@ std::uint32_t RenderColor::to_pixel(std::uint8_t bpp, std::uint32_t rp, std::uin
 // =========================================================================
 // TEACHING NOTE: This is a simple 8x16 bitmap font. Each character is
 // 16 bytes, one per row. Bit 7 (0x80) is the leftmost pixel. We define
-// only basic ASCII characters. For undefined characters, we draw a
-// placeholder rectangle.
+// printable ASCII characters 32-126 with proper recognizable glyphs.
 //
 // A real browser would use a vector font (TrueType, OpenType) rendered
 // via FreeType and HarfBuzz. That would require third-party libraries,
-// which violates our zero-dependency rule. So we use this simple bitmap
-// font. It is readable but not pretty.
+// which violates our zero-dependency rule. So we use this bitmap font.
+// The glyphs are based on the classic 8x16 VGA/IBM PC ROM font.
 
 const std::vector<std::uint8_t>& Renderer::font_data() {
     // TEACHING NOTE: We generate a basic 8x16 font for printable ASCII
-    // characters (32-126). Each glyph is 16 bytes. For brevity, we
-    // include a compact set. Undefined glyphs are all zeros (blank).
+    // characters (32-126). Each glyph is 16 bytes. The font vector is
+    // 128 * 16 = 2048 bytes total, covering all 128 ASCII entries.
     static std::vector<std::uint8_t> font(128 * 16, 0);  // 128 chars * 16 rows
 
     static bool initialized = false;
@@ -167,37 +168,103 @@ const std::vector<std::uint8_t>& Renderer::font_data() {
             }
         };
 
-        // 'A' (65) - simplified
-        static const std::uint8_t a_glyph[16] = {
-            0x00, 0x00, 0x00, 0x18, 0x24, 0x42, 0x42, 0x42,
-            0x7E, 0x42, 0x42, 0x42, 0x42, 0x00, 0x00, 0x00
+        // ' ' (32) - blank
+        static const std::uint8_t space_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
-        set_char('A', a_glyph);
+        set_char(' ', space_glyph);
 
-        // 'B' (66) - simplified
-        static const std::uint8_t b_glyph[16] = {
-            0x00, 0x00, 0x00, 0x7C, 0x42, 0x42, 0x42, 0x7C,
-            0x42, 0x42, 0x42, 0x7C, 0x00, 0x00, 0x00, 0x00
+        // '!' (33)
+        static const std::uint8_t excl_glyph[16] = {
+            0x00, 0x00, 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x18,
+            0x18, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00
         };
-        set_char('B', b_glyph);
+        set_char('!', excl_glyph);
 
-        // Use a generic block for all other characters for now
-        // In a complete implementation, every printable character would
-        // have its own glyph. For the educational purpose, we create
-        // a generic visible block.
-        for (int ch = 33; ch < 127; ch++) {
-            if (ch == 'A' || ch == 'B') continue;  // Already set
-            static std::uint8_t generic[16];
-            // Create a simple block pattern for each character
-            generic[4] = 0x7E;
-            generic[5] = 0x42;
-            generic[6] = 0x42;
-            generic[7] = 0x42;
-            generic[8] = 0x42;
-            generic[9] = 0x42;
-            generic[10] = 0x7E;
-            set_char(ch, generic);
-        }
+        // '"' (34)
+        static const std::uint8_t quote_glyph[16] = {
+            0x00, 0x66, 0x66, 0x66, 0x24, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('"', quote_glyph);
+
+        // '#' (35)
+        static const std::uint8_t hash_glyph[16] = {
+            0x00, 0x00, 0x6C, 0x6C, 0xFE, 0x6C, 0xFE, 0x6C,
+            0x6C, 0xFE, 0x6C, 0x6C, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('#', hash_glyph);
+
+        // '$' (36)
+        static const std::uint8_t dollar_glyph[16] = {
+            0x18, 0x18, 0x7C, 0xC6, 0xC0, 0x7C, 0x06, 0xC6,
+            0x7C, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('$', dollar_glyph);
+
+        // '%' (37)
+        static const std::uint8_t percent_glyph[16] = {
+            0x00, 0x00, 0x00, 0xC2, 0xC6, 0x0C, 0x18, 0x30,
+            0x60, 0xC6, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('%', percent_glyph);
+
+        // '&' (38)
+        static const std::uint8_t amp_glyph[16] = {
+            0x00, 0x00, 0x38, 0x6C, 0x6C, 0x38, 0x76, 0xDC,
+            0xCC, 0xCC, 0x76, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('&', amp_glyph);
+
+        // ''' (39)
+        static const std::uint8_t squote_glyph[16] = {
+            0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('\'', squote_glyph);
+
+        // '(' (40)
+        static const std::uint8_t lparen_glyph[16] = {
+            0x00, 0x00, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('(', lparen_glyph);
+
+        // ')' (41)
+        static const std::uint8_t rparen_glyph[16] = {
+            0x00, 0x00, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x0C,
+            0x0C, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char(')', rparen_glyph);
+
+        // '*' (42)
+        static const std::uint8_t star_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x18, 0x3C, 0x7E, 0x18,
+            0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('*', star_glyph);
+
+        // '+' (43)
+        static const std::uint8_t plus_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0xFF,
+            0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('+', plus_glyph);
+
+        // ',' (44)
+        static const std::uint8_t comma_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x38, 0x38, 0x18, 0x30, 0x00, 0x00, 0x00
+        };
+        set_char(',', comma_glyph);
+
+        // '-' (45)
+        static const std::uint8_t minus_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('-', minus_glyph);
 
         // '.' (46)
         static const std::uint8_t dot_glyph[16] = {
@@ -206,12 +273,565 @@ const std::vector<std::uint8_t>& Renderer::font_data() {
         };
         set_char('.', dot_glyph);
 
-        // ' ' (32) - blank
-        static const std::uint8_t space_glyph[16] = {
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // '/' (47)
+        static const std::uint8_t slash_glyph[16] = {
+            0x00, 0x00, 0x00, 0x06, 0x0C, 0x18, 0x30, 0x60,
+            0xC0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('/', slash_glyph);
+
+        // '0' (48)
+        static const std::uint8_t zero_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xCE, 0xD6, 0xD6,
+            0xE6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('0', zero_glyph);
+
+        // '1' (49)
+        static const std::uint8_t one_glyph[16] = {
+            0x00, 0x00, 0x18, 0x38, 0x78, 0x18, 0x18, 0x18,
+            0x18, 0x18, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('1', one_glyph);
+
+        // '2' (50)
+        static const std::uint8_t two_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0x06, 0x0C, 0x18, 0x30,
+            0x60, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('2', two_glyph);
+
+        // '3' (51)
+        static const std::uint8_t three_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0x06, 0x1C, 0x06, 0x06,
+            0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('3', three_glyph);
+
+        // '4' (52)
+        static const std::uint8_t four_glyph[16] = {
+            0x00, 0x00, 0x0C, 0x1C, 0x3C, 0x6C, 0xCC, 0xFE,
+            0x0C, 0x0C, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('4', four_glyph);
+
+        // '5' (53)
+        static const std::uint8_t five_glyph[16] = {
+            0x00, 0x00, 0xFE, 0xC0, 0xC0, 0xFC, 0x06, 0x06,
+            0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('5', five_glyph);
+
+        // '6' (54)
+        static const std::uint8_t six_glyph[16] = {
+            0x00, 0x00, 0x38, 0x60, 0xC0, 0xFC, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('6', six_glyph);
+
+        // '7' (55)
+        static const std::uint8_t seven_glyph[16] = {
+            0x00, 0x00, 0xFE, 0xC6, 0x06, 0x0C, 0x18, 0x30,
+            0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('7', seven_glyph);
+
+        // '8' (56)
+        static const std::uint8_t eight_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x7C, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('8', eight_glyph);
+
+        // '9' (57)
+        static const std::uint8_t nine_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0x7E, 0x06,
+            0x06, 0x0C, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('9', nine_glyph);
+
+        // ':' (58)
+        static const std::uint8_t colon_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00,
+            0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char(':', colon_glyph);
+
+        // ';' (59)
+        static const std::uint8_t semicolon_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00,
+            0x00, 0x38, 0x38, 0x18, 0x30, 0x00, 0x00, 0x00
+        };
+        set_char(';', semicolon_glyph);
+
+        // '<' (60)
+        static const std::uint8_t lt_glyph[16] = {
+            0x00, 0x00, 0x00, 0x06, 0x0C, 0x18, 0x30, 0x60,
+            0x30, 0x18, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('<', lt_glyph);
+
+        // '=' (61)
+        static const std::uint8_t eq_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00,
+            0x00, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('=', eq_glyph);
+
+        // '>' (62)
+        static const std::uint8_t gt_glyph[16] = {
+            0x00, 0x00, 0x00, 0x60, 0x30, 0x18, 0x0C, 0x06,
+            0x0C, 0x18, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('>', gt_glyph);
+
+        // '?' (63)
+        static const std::uint8_t question_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x0C, 0x18, 0x18,
+            0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('?', question_glyph);
+
+        // '@' (64)
+        static const std::uint8_t at_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xDE, 0xDE, 0xDE,
+            0xDC, 0xC0, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('@', at_glyph);
+
+        // 'A' (65)
+        static const std::uint8_t a_glyph[16] = {
+            0x00, 0x00, 0x10, 0x38, 0x6C, 0xC6, 0xC6, 0xFE,
+            0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('A', a_glyph);
+
+        // 'B' (66)
+        static const std::uint8_t b_glyph[16] = {
+            0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x66,
+            0x66, 0x66, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('B', b_glyph);
+
+        // 'C' (67)
+        static const std::uint8_t c_glyph[16] = {
+            0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xC0,
+            0xC0, 0xC2, 0x66, 0x3C, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('C', c_glyph);
+
+        // 'D' (68)
+        static const std::uint8_t d_glyph[16] = {
+            0x00, 0x00, 0xF8, 0x6C, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x6C, 0xF8, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('D', d_glyph);
+
+        // 'E' (69)
+        static const std::uint8_t e_glyph[16] = {
+            0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68,
+            0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('E', e_glyph);
+
+        // 'F' (70)
+        static const std::uint8_t f_glyph[16] = {
+            0x00, 0x00, 0xFE, 0x66, 0x62, 0x68, 0x78, 0x68,
+            0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('F', f_glyph);
+
+        // 'G' (71)
+        static const std::uint8_t g_glyph[16] = {
+            0x00, 0x00, 0x3C, 0x66, 0xC2, 0xC0, 0xC0, 0xDE,
+            0xC6, 0xC6, 0x66, 0x3A, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('G', g_glyph);
+
+        // 'H' (72)
+        static const std::uint8_t h_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xFE, 0xC6,
+            0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('H', h_glyph);
+
+        // 'I' (73)
+        static const std::uint8_t i_glyph[16] = {
+            0x00, 0x00, 0x3C, 0x18, 0x18, 0x18, 0x18, 0x18,
+            0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('I', i_glyph);
+
+        // 'J' (74)
+        static const std::uint8_t j_glyph[16] = {
+            0x00, 0x00, 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
+            0xCC, 0xCC, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('J', j_glyph);
+
+        // 'K' (75)
+        static const std::uint8_t k_glyph[16] = {
+            0x00, 0x00, 0xE6, 0x66, 0x6C, 0x78, 0x78, 0x6C,
+            0x66, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('K', k_glyph);
+
+        // 'L' (76)
+        static const std::uint8_t l_glyph[16] = {
+            0x00, 0x00, 0xF0, 0x60, 0x60, 0x60, 0x60, 0x60,
+            0x60, 0x62, 0x66, 0xFE, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('L', l_glyph);
+
+        // 'M' (77)
+        static const std::uint8_t m_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xEE, 0xFE, 0xFE, 0xD6, 0xD6,
+            0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('M', m_glyph);
+
+        // 'N' (78)
+        static const std::uint8_t n_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xE6, 0xF6, 0xFE, 0xDE, 0xCE,
+            0xC6, 0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('N', n_glyph);
+
+        // 'O' (79)
+        static const std::uint8_t o_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('O', o_glyph);
+
+        // 'P' (80)
+        static const std::uint8_t p_glyph[16] = {
+            0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x60,
+            0x60, 0x60, 0x60, 0xF0, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('P', p_glyph);
+
+        // 'Q' (81)
+        static const std::uint8_t q_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6,
+            0xD6, 0xDE, 0x7C, 0x06, 0x0C, 0x00, 0x00, 0x00
+        };
+        set_char('Q', q_glyph);
+
+        // 'R' (82)
+        static const std::uint8_t r_glyph[16] = {
+            0x00, 0x00, 0xFC, 0x66, 0x66, 0x66, 0x7C, 0x6C,
+            0x66, 0x66, 0x66, 0xE6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('R', r_glyph);
+
+        // 'S' (83)
+        static const std::uint8_t s_glyph[16] = {
+            0x00, 0x00, 0x7C, 0xC6, 0xC6, 0x60, 0x38, 0x0C,
+            0x06, 0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('S', s_glyph);
+
+        // 'T' (84)
+        static const std::uint8_t t_glyph[16] = {
+            0x00, 0x00, 0xFF, 0xDB, 0x99, 0x18, 0x18, 0x18,
+            0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('T', t_glyph);
+
+        // 'U' (85)
+        static const std::uint8_t u_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('U', u_glyph);
+
+        // 'V' (86)
+        static const std::uint8_t v_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6,
+            0x6C, 0x38, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('V', v_glyph);
+
+        // 'W' (87)
+        static const std::uint8_t w_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xC6, 0xC6, 0xD6, 0xD6, 0xD6,
+            0xFE, 0xEE, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('W', w_glyph);
+
+        // 'X' (88)
+        static const std::uint8_t x_glyph[16] = {
+            0x00, 0x00, 0xC6, 0xC6, 0x6C, 0x38, 0x38, 0x38,
+            0x38, 0x6C, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('X', x_glyph);
+
+        // 'Y' (89)
+        static const std::uint8_t y_glyph[16] = {
+            0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18,
+            0x18, 0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('Y', y_glyph);
+
+        // 'Z' (90)
+        static const std::uint8_t z_glyph[16] = {
+            0x00, 0x00, 0xFE, 0xC6, 0x86, 0x0C, 0x18, 0x30,
+            0x60, 0xC2, 0xC6, 0xFE, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('Z', z_glyph);
+
+        // '[' (91)
+        static const std::uint8_t lbracket_glyph[16] = {
+            0x00, 0x00, 0x3C, 0x30, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('[', lbracket_glyph);
+
+        // '\' (92)
+        static const std::uint8_t bslash_glyph[16] = {
+            0x00, 0x00, 0x00, 0x80, 0xC0, 0x60, 0x30, 0x18,
+            0x0C, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('\\', bslash_glyph);
+
+        // ']' (93)
+        static const std::uint8_t rbracket_glyph[16] = {
+            0x00, 0x00, 0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
+            0x0C, 0x0C, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char(']', rbracket_glyph);
+
+        // '^' (94)
+        static const std::uint8_t caret_glyph[16] = {
+            0x00, 0x10, 0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
-        set_char(' ', space_glyph);
+        set_char('^', caret_glyph);
+
+        // '_' (95)
+        static const std::uint8_t underscore_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00
+        };
+        set_char('_', underscore_glyph);
+
+        // '`' (96)
+        static const std::uint8_t backtick_glyph[16] = {
+            0x30, 0x18, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('`', backtick_glyph);
+
+        // 'a' (97)
+        static const std::uint8_t la_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0x06, 0x7E,
+            0xC6, 0xC6, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('a', la_glyph);
+
+        // 'b' (98)
+        static const std::uint8_t lb_glyph[16] = {
+            0x00, 0x00, 0xC0, 0xC0, 0xC0, 0xFC, 0xC6, 0xC6,
+            0xC6, 0xC6, 0xFC, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('b', lb_glyph);
+
+        // 'c' (99)
+        static const std::uint8_t lc_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC0,
+            0xC0, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('c', lc_glyph);
+
+        // 'd' (100)
+        static const std::uint8_t ld_glyph[16] = {
+            0x00, 0x00, 0x06, 0x06, 0x06, 0x7E, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('d', ld_glyph);
+
+        // 'e' (101)
+        static const std::uint8_t le_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xFE,
+            0xC0, 0xC0, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('e', le_glyph);
+
+        // 'f' (102)
+        static const std::uint8_t lf_glyph[16] = {
+            0x00, 0x00, 0x1C, 0x36, 0x30, 0x78, 0x30, 0x30,
+            0x30, 0x30, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('f', lf_glyph);
+
+        // 'g' (103)
+        static const std::uint8_t lg_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0xC6, 0xC6,
+            0xC6, 0x7E, 0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00
+        };
+        set_char('g', lg_glyph);
+
+        // 'h' (104)
+        static const std::uint8_t lh_glyph[16] = {
+            0x00, 0x00, 0xC0, 0xC0, 0xC0, 0xFC, 0xC6, 0xC6,
+            0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('h', lh_glyph);
+
+        // 'i' (105)
+        static const std::uint8_t li_glyph[16] = {
+            0x00, 0x00, 0x18, 0x18, 0x00, 0x38, 0x18, 0x18,
+            0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('i', li_glyph);
+
+        // 'j' (106)
+        static const std::uint8_t lj_glyph[16] = {
+            0x00, 0x00, 0x0C, 0x0C, 0x00, 0x1C, 0x0C, 0x0C,
+            0x0C, 0x0C, 0xCC, 0x78, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('j', lj_glyph);
+
+        // 'k' (107)
+        static const std::uint8_t lk_glyph[16] = {
+            0x00, 0x00, 0xC0, 0xC0, 0xC0, 0xCC, 0xD8, 0xF0,
+            0xD8, 0xCC, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('k', lk_glyph);
+
+        // 'l' (108)
+        static const std::uint8_t ll_glyph[16] = {
+            0x00, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18,
+            0x18, 0x18, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('l', ll_glyph);
+
+        // 'm' (109)
+        static const std::uint8_t lm_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0xD6, 0xD6,
+            0xD6, 0xD6, 0xD6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('m', lm_glyph);
+
+        // 'n' (110)
+        static const std::uint8_t ln_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0xC6, 0xC6,
+            0xC6, 0xC6, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('n', ln_glyph);
+
+        // 'o' (111)
+        static const std::uint8_t lo_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7C, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('o', lo_glyph);
+
+        // 'p' (112)
+        static const std::uint8_t lp_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0xC6, 0xC6,
+            0xC6, 0xFC, 0xC0, 0xC0, 0xC0, 0x00, 0x00, 0x00
+        };
+        set_char('p', lp_glyph);
+
+        // 'q' (113)
+        static const std::uint8_t lq_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0xC6, 0xC6,
+            0xC6, 0x7E, 0x06, 0x06, 0x06, 0x00, 0x00, 0x00
+        };
+        set_char('q', lq_glyph);
+
+        // 'r' (114)
+        static const std::uint8_t lr_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xF0, 0xC0,
+            0xC0, 0xC0, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('r', lr_glyph);
+
+        // 's' (115)
+        static const std::uint8_t ls_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x7E, 0xC0, 0x7C,
+            0x06, 0xC6, 0x7C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('s', ls_glyph);
+
+        // 't' (116)
+        static const std::uint8_t lt2_glyph[16] = {
+            0x00, 0x00, 0x30, 0x30, 0x30, 0x78, 0x30, 0x30,
+            0x30, 0x36, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('t', lt2_glyph);
+
+        // 'u' (117)
+        static const std::uint8_t lu_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6,
+            0xC6, 0xC6, 0x7E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('u', lu_glyph);
+
+        // 'v' (118)
+        static const std::uint8_t lv_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6,
+            0xC6, 0x6C, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('v', lv_glyph);
+
+        // 'w' (119)
+        static const std::uint8_t lw_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xD6,
+            0xD6, 0xFE, 0x6C, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('w', lw_glyph);
+
+        // 'x' (120)
+        static const std::uint8_t lx_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0x6C, 0x38,
+            0x38, 0x6C, 0xC6, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('x', lx_glyph);
+
+        // 'y' (121)
+        static const std::uint8_t ly_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC6, 0xC6, 0xC6,
+            0xC6, 0x7E, 0x06, 0x06, 0x7C, 0x00, 0x00, 0x00
+        };
+        set_char('y', ly_glyph);
+
+        // 'z' (122)
+        static const std::uint8_t lz_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x0C, 0x18,
+            0x30, 0x60, 0xFE, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('z', lz_glyph);
+
+        // '{' (123)
+        static const std::uint8_t lbrace_glyph[16] = {
+            0x00, 0x00, 0x0E, 0x18, 0x18, 0x18, 0x70, 0x18,
+            0x18, 0x18, 0x0E, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('{', lbrace_glyph);
+
+        // '|' (124)
+        static const std::uint8_t pipe_glyph[16] = {
+            0x00, 0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
+            0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('|', pipe_glyph);
+
+        // '}' (125)
+        static const std::uint8_t rbrace_glyph[16] = {
+            0x00, 0x00, 0x70, 0x18, 0x18, 0x18, 0x0E, 0x18,
+            0x18, 0x18, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('}', rbrace_glyph);
+
+        // '~' (126)
+        static const std::uint8_t tilde_glyph[16] = {
+            0x00, 0x00, 0x00, 0x00, 0x76, 0xDC, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        };
+        set_char('~', tilde_glyph);
 
         initialized = true;
     }
@@ -223,7 +843,9 @@ const std::vector<std::uint8_t>& Renderer::font_data() {
 // Renderer implementation
 // =========================================================================
 
-Renderer::Renderer() = default;
+Renderer::Renderer() {
+    init_fonts();
+}
 
 Renderer::~Renderer() {
     if (fb_mem_) {
@@ -369,20 +991,235 @@ void Renderer::draw_rect(int x, int y, int width, int height, int border_width, 
     fill_rect(x + width - border_width, y, border_width, height, color);
 }
 
+// =========================================================================
+// Font management - CC0 TrueType font loading with bitmap fallback
+// =========================================================================
+// TEACHING NOTE: The browser bundles CC0 (public domain) TrueType fonts
+// in assets/fonts/. On startup, we try to load the default sans-serif
+// font (Aileron). If it loads successfully, text is rendered using TTF
+// outlines with anti-aliasing via our from-scratch TTF parser (font.cpp).
+// If TTF loading fails (missing files, parse error, etc.), we fall back
+// to the built-in 8x16 bitmap font defined later in this file.
+//
+// The CSS font-family property is mapped to bundled CC0 fonts:
+//   Arial, Helvetica, sans-serif -> Aileron
+//   Times New Roman, Times, serif -> OSerif
+//   Courier New, Courier, monospace -> Unitblock
+//   Verdana, Geneva -> Vegur
+//
+// All fonts are CC0 1.0 Universal (Public Domain Dedication).
+// See assets/fonts/README.md for full attribution.
+// =========================================================================
+
+bool Renderer::init_fonts() {
+    // TEACHING NOTE: We try to find the assets/fonts directory relative
+    // to the executable or in common system locations. If we cannot find
+    // it, TTF rendering is disabled and the bitmap fallback is used.
+
+    // Try several possible locations for the fonts directory
+    std::vector<std::string> search_paths = {
+        "assets/fonts/",
+        "../assets/fonts/",
+        "./assets/fonts/",
+        "/usr/share/chinstrap/fonts/",
+        "/usr/local/share/chinstrap/fonts/"
+    };
+
+    std::string fonts_dir;
+    for (const auto& path : search_paths) {
+        std::string test = path + "Aileron-Regular.ttf";
+        struct stat st;
+        if (stat(test.c_str(), &st) == 0) {
+            fonts_dir = path;
+            break;
+        }
+    }
+
+    if (fonts_dir.empty()) {
+        // No fonts directory found; bitmap fallback will be used
+        ttf_available_ = false;
+        return false;
+    }
+
+    // Try to load the default sans-serif font (Aileron)
+    std::string font_path = fonts_dir + "Aileron-Regular.ttf";
+    if (load_ttf_font(font_path)) {
+        ttf_available_ = true;
+        return true;
+    }
+
+    // If Aileron fails, try OSerif (serif) as a fallback TTF
+    font_path = fonts_dir + "OSerif-Regular.ttf";
+    if (load_ttf_font(font_path)) {
+        ttf_available_ = true;
+        return true;
+    }
+
+    // If all TTF loads fail, bitmap fallback will be used
+    ttf_available_ = false;
+    return false;
+}
+
+bool Renderer::load_ttf_font(const std::string& path) {
+    // TEACHING NOTE: We use our from-scratch TTF parser (font.cpp) to load
+    // the font file. The parser reads the TrueType tables (head, cmap,
+    // glyf, loca, hmtx, hhea, maxp, name) and can rasterize glyph outlines
+    // with anti-aliasing. This is a significant achievement: we can render
+    // Unicode text without any third-party font library (no FreeType).
+
+    auto font = std::make_unique<Font>();
+    if (font->load(path)) {
+        ttf_font_ = std::move(font);
+        return true;
+    }
+    return false;
+}
+
+std::string Renderer::map_font_family(const std::string& family) const {
+    // TEACHING NOTE: CSS font-family can contain multiple font names as
+    // a comma-separated list (e.g. "Arial, Helvetica, sans-serif"). We
+    // parse the first name and map it to a bundled CC0 font file.
+    //
+    // Mapping:
+    //   Arial, Helvetica -> Aileron-Regular.ttf
+    //   sans-serif -> Aileron-Regular.ttf
+    //   Times New Roman, Times -> OSerif-Regular.ttf
+    //   serif -> OSerif-Regular.ttf
+    //   Courier New, Courier -> Unitblock-Regular.ttf
+    //   monospace -> Unitblock-Regular.ttf
+    //   Verdana, Geneva -> Vegur-Regular.ttf
+    //   default -> Aileron-Regular.ttf
+
+    // Extract the first font name (before any comma)
+    std::string first = family;
+    size_t comma = first.find(',');
+    if (comma != std::string::npos) {
+        first = first.substr(0, comma);
+    }
+
+    // Trim whitespace and quotes
+    while (!first.empty() && (first.front() == ' ' || first.front() == '"' || first.front() == '\'')) {
+        first.erase(first.begin());
+    }
+    while (!first.empty() && (first.back() == ' ' || first.back() == '"' || first.back() == '\'')) {
+        first.pop_back();
+    }
+
+    // Convert to lowercase for comparison
+    std::string lower = first;
+    for (auto& c : lower) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    // Check for sans-serif families
+    if (lower == "arial" || lower == "helvetica" || lower == "sans-serif" ||
+        lower == "sans serif" || lower == "helvetica neue" ||
+        lower == "segoe ui" || lower == "tahoma" || lower == "trebuchet ms" ||
+        lower == "verdana" || lower == "geneva") {
+        return "Aileron-Regular.ttf";
+    }
+
+    // Check for serif families
+    if (lower == "times" || lower == "times new roman" || lower == "serif" ||
+        lower == "georgia" || lower == "garamond" || lower == "palatino") {
+        return "OSerif-Regular.ttf";
+    }
+
+    // Check for monospace families
+    if (lower == "courier" || lower == "courier new" || lower == "monospace" ||
+        lower == "consolas" || lower == "monaco" || lower == "menlo") {
+        return "Unitblock-Regular.ttf";
+    }
+
+    // Default to sans-serif (Aileron)
+    return "Aileron-Regular.ttf";
+}
+
+// =========================================================================
+// Text rendering - TTF path with bitmap fallback
+// =========================================================================
+
 int Renderer::text_width(const std::string& text) const {
-    // Each character is 8 pixels wide
+    // If TTF font is available, use its metrics for accurate width
+    if (ttf_available_ && ttf_font_) {
+        // TTF text width: sum of advance widths for each character
+        int width = 0;
+        for (std::size_t i = 0; i < text.size(); i++) {
+            unsigned char ch = static_cast<unsigned char>(text[i]);
+            if (ch >= 128) ch = '?';
+            uint32_t glyph_index = ttf_font_->get_glyph_index(ch);
+            GlyphMetrics metrics = ttf_font_->get_glyph_metrics(glyph_index);
+            // Scale from font units to pixels at 16px size
+            int advance_px = static_cast<int>(
+                static_cast<float>(metrics.advance_width) /
+                static_cast<float>(ttf_font_->get_units_per_em()) * 16.0f);
+            if (advance_px <= 0) advance_px = 8;  // Minimum width
+            width += advance_px;
+        }
+        return width;
+    }
+    // Bitmap font: each character is 8 pixels wide
     return static_cast<int>(text.size()) * 8;
 }
 
 void Renderer::draw_text(int x, int y, const std::string& text, const RenderColor& color) {
+    // TEACHING NOTE: Text rendering has two paths:
+    //   1. TTF path: If a TrueType font is loaded, we rasterize each
+    //      glyph using our from-scratch TTF parser (font.cpp). This
+    //      produces anti-aliased glyphs with proper advance widths.
+    //   2. Bitmap path: If TTF is not available, we use the built-in
+    //      8x16 bitmap font (font_data()). Each glyph is 16 bytes,
+    //      one per row. Bit 7 is the leftmost pixel.
+    //
+    // The bitmap font is the fallback and is always available.
+
+    if (ttf_available_ && ttf_font_) {
+        // TTF rendering path: rasterize each glyph and blit it
+        int pen_x = x;
+        int pixel_size = 16;  // 16px font size for body text
+
+        for (std::size_t i = 0; i < text.size(); i++) {
+            unsigned char ch = static_cast<unsigned char>(text[i]);
+            if (ch >= 128) ch = '?';
+
+            uint32_t glyph_index = ttf_font_->get_glyph_index(ch);
+            GlyphBitmap bitmap = ttf_font_->rasterize_glyph(glyph_index, pixel_size);
+
+            // Blit the glyph bitmap to the framebuffer
+            for (int row = 0; row < bitmap.height; row++) {
+                for (int col = 0; col < bitmap.width; col++) {
+                    uint8_t coverage = bitmap.pixels[static_cast<std::size_t>(row) * bitmap.width + col];
+                    if (coverage > 0) {
+                        // Blend with the text color based on coverage
+                        RenderColor blended = color;
+                        if (coverage < 255) {
+                            // Simple alpha blend: scale color by coverage
+                            blended.a = static_cast<uint8_t>(
+                                static_cast<int>(color.a) * coverage / 255);
+                        }
+                        put_pixel_internal(
+                            pen_x + bitmap.x_offset + col,
+                            y + bitmap.y_offset + row,
+                            blended);
+                    }
+                }
+            }
+
+            // Advance the pen
+            GlyphMetrics metrics = ttf_font_->get_glyph_metrics(glyph_index);
+            int advance_px = static_cast<int>(
+                static_cast<float>(metrics.advance_width) /
+                static_cast<float>(ttf_font_->get_units_per_em()) * pixel_size);
+            if (advance_px <= 0) advance_px = 8;
+            pen_x += advance_px;
+        }
+        return;
+    }
+
+    // Bitmap font fallback path
     // TEACHING NOTE: Drawing text with a bitmap font is simple:
     // For each character, look up its glyph (16 rows of 8 bits each).
     // For each row, for each bit that is set, draw a pixel.
-    //
-    // This is the most basic form of text rendering. Real browsers
-    // use complex text shaping with FreeType (for glyph outlines) and
-    // HarfBuzz (for text shaping - handling ligatures, diacritics,
-    // bidirectional text, etc.).
 
     const auto& font = font_data();
 
@@ -405,11 +1242,34 @@ void Renderer::draw_text(int x, int y, const std::string& text, const RenderColo
 
 void Renderer::draw_text(int x, int y, const std::string& text, const RenderColor& color, int max_width) {
     // Draw text with width clipping (for text wrapping)
-    int chars_that_fit = max_width / 8;
-    if (chars_that_fit <= 0) chars_that_fit = 1;
-
-    std::string truncated = text.substr(0, static_cast<std::size_t>(chars_that_fit));
-    draw_text(x, y, truncated, color);
+    if (ttf_available_ && ttf_font_) {
+        // TTF path: truncate based on TTF text width
+        int total_width = 0;
+        std::size_t chars_that_fit = 0;
+        int pixel_size = 16;
+        for (std::size_t i = 0; i < text.size(); i++) {
+            unsigned char ch = static_cast<unsigned char>(text[i]);
+            if (ch >= 128) ch = '?';
+            uint32_t glyph_index = ttf_font_->get_glyph_index(ch);
+            GlyphMetrics metrics = ttf_font_->get_glyph_metrics(glyph_index);
+            int advance_px = static_cast<int>(
+                static_cast<float>(metrics.advance_width) /
+                static_cast<float>(ttf_font_->get_units_per_em()) * pixel_size);
+            if (advance_px <= 0) advance_px = 8;
+            if (total_width + advance_px > max_width) break;
+            total_width += advance_px;
+            chars_that_fit++;
+        }
+        if (chars_that_fit == 0) chars_that_fit = 1;
+        std::string truncated = text.substr(0, chars_that_fit);
+        draw_text(x, y, truncated, color);
+    } else {
+        // Bitmap path
+        int chars_that_fit = max_width / 8;
+        if (chars_that_fit <= 0) chars_that_fit = 1;
+        std::string truncated = text.substr(0, static_cast<std::size_t>(chars_that_fit));
+        draw_text(x, y, truncated, color);
+    }
 }
 
 // =========================================================================
@@ -444,6 +1304,7 @@ void Renderer::render_box(const Box& box, int offset_x, int offset_y) {
         fill_rect(abs_x, abs_y, w, h, bg);
     }
 
+
     // Draw border
     std::string border_val = box.get_style("border");
     if (!border_val.empty() && border_val != "none") {
@@ -463,6 +1324,63 @@ void Renderer::render_box(const Box& box, int offset_x, int offset_y) {
     // Draw text
     if (box.type == Box::Type::Text && !box.text.empty()) {
         RenderColor text_color = get_color_style(box, "color", RenderColor::black());
+
+        // Check if this box has a different font-family and switch fonts
+        // TEACHING NOTE: We check the CSS font-family property and load
+        // the corresponding CC0 TTF font. For example, if font-family is
+        // "serif", we load OSerif. If it is "monospace", we load Unitblock.
+        // If no font-family is specified, we keep the default (Aileron).
+        std::string font_family = box.get_style("font-family");
+        if (!font_family.empty() && ttf_available_) {
+            std::string mapped = map_font_family(font_family);
+            // Only reload if the mapped font is different from current
+            if (ttf_font_) {
+                std::string current_name = ttf_font_->get_family_name();
+                // Simple heuristic: if the mapped font name does not match
+                // the current font family, try to load it
+                std::string mapped_lower = mapped;
+                for (auto& c : mapped_lower) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                std::string current_lower = current_name;
+                for (auto& c : current_lower) {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                // If mapped font starts with a different name, try loading
+                bool need_reload = false;
+                if (mapped_lower.find("oserif") != std::string::npos &&
+                    current_lower.find("oserif") == std::string::npos) {
+                    need_reload = true;
+                } else if (mapped_lower.find("unitblock") != std::string::npos &&
+                           current_lower.find("unitblock") == std::string::npos) {
+                    need_reload = true;
+                } else if (mapped_lower.find("vegur") != std::string::npos &&
+                           current_lower.find("vegur") == std::string::npos) {
+                    need_reload = true;
+                } else if (mapped_lower.find("aileron") != std::string::npos &&
+                           current_lower.find("aileron") == std::string::npos &&
+                           current_lower.find("oserif") == std::string::npos &&
+                           current_lower.find("unitblock") == std::string::npos &&
+                           current_lower.find("vegur") == std::string::npos) {
+                    need_reload = true;
+                }
+                if (need_reload) {
+                    // Try to find the fonts directory
+                    std::vector<std::string> search_paths = {
+                        "assets/fonts/",
+                        "../assets/fonts/",
+                        "./assets/fonts/",
+                        "/usr/share/chinstrap/fonts/",
+                        "/usr/local/share/chinstrap/fonts/"
+                    };
+                    for (const auto& sp : search_paths) {
+                        std::string full_path = sp + mapped;
+                        if (load_ttf_font(full_path)) break;
+                    }
+                }
+            }
+        }
+
         draw_text(abs_x, abs_y, box.text, text_color, w);
     }
 
@@ -560,6 +1478,7 @@ void Renderer::render_to_ppm(const Box& root, const std::string& filename,
     fb_info_.green_pos = 8;
     fb_info_.blue_pos = 16;
     fb_info_.alpha_pos = 24;
+    fb_info_.smem_len = width * height * 3;
     initialized_ = true;
 
     // Render the box tree to our virtual framebuffer

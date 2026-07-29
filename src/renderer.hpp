@@ -41,8 +41,11 @@
 #include <string>
 #include <cstdint>
 #include <vector>
+#include <memory>
 
 namespace chinstrap {
+
+class Font;
 
 // Forward declaration
 struct Box;
@@ -150,12 +153,12 @@ public:
     // Draw a single pixel
     void put_pixel(int x, int y, const RenderColor& color);
 
-    // Draw text at a position using the built-in bitmap font
-    // TEACHING NOTE: We use a simple 8x16 bitmap font. Each character
-    // is 8 pixels wide and 16 pixels tall. The font is stored as an
-    // array of bytes, where each byte represents one row of pixels.
-    // Bit 7 is the leftmost pixel, bit 0 is the rightmost.
-    // This is the classic PC BIOS font format.
+    // Draw text at a position using TTF fonts or the bitmap fallback
+    // TEACHING NOTE: We try to use bundled CC0 TrueType fonts first.
+    // The TTF parser in font.cpp handles outline rasterization with
+    // anti-aliasing. If TTF loading fails, we fall back to the built-in
+    // 8x16 bitmap font (font_data()), which covers ASCII 32-126.
+    // The bitmap font is always available as a last resort.
     void draw_text(int x, int y, const std::string& text, const RenderColor& color);
     void draw_text(int x, int y, const std::string& text, const RenderColor& color, int max_width);
 
@@ -195,12 +198,27 @@ private:
     // Parse a CSS color string for a specific property
     RenderColor get_color_style(const Box& box, const std::string& property, const RenderColor& default_color) const;
 
-    // Simple bitmap font (8x16)
+    // Simple bitmap font (8x16) - fallback when TTF fonts are unavailable
     // TEACHING NOTE: This is a simplified font with basic ASCII glyphs.
     // Each glyph is 16 bytes (one per row). The most significant bit of
     // each byte is the leftmost pixel. We only define a few characters
     // and use a fallback for undefined ones.
+    // This is the FALLBACK. The primary font path uses TTF fonts.
     static const std::vector<std::uint8_t>& font_data();
+
+    // TTF font management
+    // TEACHING NOTE: We bundle CC0 TrueType fonts in assets/fonts/.
+    // The map_font_family() method maps CSS font-family names to the
+    // correct bundled TTF file. For example, "Arial" and "sans-serif"
+    // map to Aileron, "Times" and "serif" map to OSerif, and
+    // "Courier New" and "monospace" map to Unitblock.
+    std::string map_font_family(const std::string& family) const;
+    bool load_ttf_font(const std::string& path);
+    bool init_fonts();
+
+    // TTF font instance (null if TTF loading failed)
+    std::unique_ptr<class Font> ttf_font_;
+    bool ttf_available_ = false;
 };
 
 } // namespace chinstrap

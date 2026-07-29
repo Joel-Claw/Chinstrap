@@ -119,7 +119,8 @@ std::string LayoutEngine::get_display(const Node& node) const {
         "section", "article", "aside", "header", "footer", "nav",
         "ul", "ol", "li", "table", "tr", "td", "th",
         "blockquote", "pre", "hr", "form", "fieldset",
-        "address", "figure", "figcaption", "main", "details", "summary"
+        "address", "figure", "figcaption", "main", "details", "summary",
+        "html", "body", "head", "title", "style", "script", "link", "meta"
     };
     if (std::find(block_tags.begin(), block_tags.end(), node.tag_name) != block_tags.end()) {
         return "block";
@@ -165,6 +166,13 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
         box->height = 0;
         if (node.type == NodeType::Document) {
             layout_block_children(*box, node);
+            // Compute height from children
+            float max_bottom = 0;
+            for (const auto& child : box->children) {
+                float child_bottom = child->y + child->outer_height();
+                if (child_bottom > max_bottom) max_bottom = child_bottom;
+            }
+            box->height = max_bottom;
         }
         return box;
     }

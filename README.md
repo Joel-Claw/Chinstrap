@@ -64,10 +64,33 @@ actually doing under the hood.
 | Main | `src/main.cpp` | Startup sequence, arg parsing, pipeline orchestration |
 | Plugins | `include/chinstrap/plugin_types.h`, `plugins/` | Shared library (.so) plugin system with dlopen |
 
+## Screenshots
+
+![Chinstrap rendering example.com](screenshots/example.com.png)
+
+![Chinstrap rendering google.com](screenshots/google.com.png)
+
+## Fonts
+
+Chinstrap bundles CC0 (Public Domain) TrueType fonts and maps them to common
+web font families. No third-party font libraries are required.
+
+| Font       | Type       | Replaces               | Source                        |
+|------------|------------|------------------------|-------------------------------|
+| Aileron    | Sans-serif | Arial, Helvetica       | dot colon (CC0)               |
+| Vegur      | Sans-serif | Verdana, Geneva        | dot colon (CC0)               |
+| OSerif     | Serif      | Times New Roman, Times  | GGBotNet CC0 Fonts (CC0)      |
+| Unitblock  | Monospace  | Courier New, Courier   | GGBotNet CC0 Fonts (CC0)      |
+
+The renderer tries to load bundled TTF fonts first, then falls back to a
+built-in 8x16 bitmap font if TTF loading is unavailable. See [FONTS.md](FONTS.md)
+for details.
+
 ## Documentation
 
 - [Architecture Overview](docs/architecture.md) - Pipeline diagrams and subsystem relationships
 - [How Browsers Work](docs/how-browsers-work.md) - Comprehensive guide linking real browser internals to our implementation
+- [Fonts](FONTS.md) - CC0 font attribution and mapping
 
 ## Build Instructions
 
@@ -104,8 +127,12 @@ sudo ./chinstrap http://example.com
 # Run the browser (X11 mode, if DISPLAY is set)
 ./chinstrap http://example.com
 
+# Take a screenshot (headless, no display needed)
+./chinstrap --screenshot=/tmp/screenshot.ppm http://example.com
+convert /tmp/screenshot.ppm screenshot.png
+
 # Run tests
-ctest --output on-failure
+cd build && ctest --output on-failure
 ```
 
 ### Test Results
