@@ -178,29 +178,35 @@ enum X11EventMask {
     X11_SubstructureNotifyMask = 0x00080000,
 };
 
-// Helper: pack a 16-bit value in big-endian
+// Helper: pack a 16-bit value in little-endian
+// TEACHING NOTE: We use little-endian byte order for all X11 communication.
+// All modern systems (x86_64, aarch64) are little-endian, and the X11 protocol
+// allows the client to choose its byte order. We declare 0x6C (little-endian)
+// in the setup request. The server may use a different byte order in its
+// replies, but in practice all modern X servers on x86_64/aarch64 are also
+// little-endian, so we parse replies in little-endian too.
 static inline void put_u16(uint8_t* buf, uint16_t val) {
-    buf[0] = (uint8_t)(val >> 8);
-    buf[1] = (uint8_t)(val & 0xFF);
+    buf[0] = (uint8_t)(val & 0xFF);
+    buf[1] = (uint8_t)((val >> 8) & 0xFF);
 }
 
-// Helper: pack a 32-bit value in big-endian
+// Helper: pack a 32-bit value in little-endian
 static inline void put_u32(uint8_t* buf, uint32_t val) {
-    buf[0] = (uint8_t)(val >> 24);
-    buf[1] = (uint8_t)(val >> 16);
-    buf[2] = (uint8_t)(val >> 8);
-    buf[3] = (uint8_t)(val & 0xFF);
+    buf[0] = (uint8_t)(val & 0xFF);
+    buf[1] = (uint8_t)((val >> 8) & 0xFF);
+    buf[2] = (uint8_t)((val >> 16) & 0xFF);
+    buf[3] = (uint8_t)((val >> 24) & 0xFF);
 }
 
-// Helper: read a 16-bit big-endian value
+// Helper: read a 16-bit little-endian value
 static inline uint16_t get_u16(const uint8_t* buf) {
-    return (uint16_t)((buf[0] << 8) | buf[1]);
+    return (uint16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8));
 }
 
-// Helper: read a 32-bit big-endian value
+// Helper: read a 32-bit little-endian value
 static inline uint32_t get_u32(const uint8_t* buf) {
-    return ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
-           ((uint32_t)buf[2] << 8) | (uint32_t)buf[3];
+    return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+           ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
 }
 
 // Helper: pad a length to 4-byte boundary
@@ -498,14 +504,18 @@ bool X11Connection::do_handshake() {
         size_t setup_size = 12 + name_padded + data_padded;
         std::vector<uint8_t> setup(setup_size, 0);
 
-        setup[0] = 0x42;  // 'B' = big-endian
+        setup[0] = 0x6C;  // 'l' = little-endian
         setup[1] = 0x00;
-        setup[2] = 0; setup[3] = 11;
+        // Protocol major version 11 in little-endian
+        setup[2] = 11; setup[3] = 0;
+        // Protocol minor version 0 in little-endian
         setup[4] = 0; setup[5] = 0;
-        setup[6] = static_cast<uint8_t>(name_len >> 8);
-        setup[7] = static_cast<uint8_t>(name_len & 0xFF);
-        setup[8] = static_cast<uint8_t>(data_len >> 8);
-        setup[9] = static_cast<uint8_t>(data_len & 0xFF);
+        // Auth name length in little-endian
+        setup[6] = static_cast<uint8_t>(name_len & 0xFF);
+        setup[7] = static_cast<uint8_t>(name_len >> 8);
+        // Auth data length in little-endian
+        setup[8] = static_cast<uint8_t>(data_len & 0xFF);
+        setup[9] = static_cast<uint8_t>(data_len >> 8);
         setup[10] = 0; setup[11] = 0;
 
         if (use_auth) {
@@ -524,7 +534,7 @@ bool X11Connection::do_handshake() {
         if (status == 0) {
             // Failed - read reason
             uint8_t reason_len = reply[1];
-            uint16_t extra_units = static_cast<uint16_t>((reply[6] << 8) | reply[7]);
+            uint16_t extra_units = get_u16(&reply[6]);
             size_t extra_bytes = static_cast<size_t>(extra_units) * 4;
             if (extra_bytes > 0) {
                 std::vector<uint8_t> extra_data(extra_bytes, 0);
@@ -819,10 +829,8 @@ void X11Window::send_create_window(X11Connection* conn, int w, int h) {
     // x, y: centered roughly
     int16_t x = 100;
     int16_t y = 100;
-    req[12] = (uint8_t)((x >> 8) & 0xFF);
-    req[13] = (uint8_t)(x & 0xFF);
-    req[14] = (uint8_t)((y >> 8) & 0xFF);
-    req[15] = (uint8_t)(y & 0xFF);
+    put_u16(&req[12], static_cast<uint16_t>(x));
+    put_u16(&req[14], static_cast<uint16_t>(y));
     put_u16(&req[16], (uint16_t)w);
     put_u16(&req[18], (uint16_t)h);
     put_u16(&req[20], 0);  // border width
@@ -1038,10 +1046,8 @@ void X11Window::put_image(X11Connection* conn, uint8_t* data, int w, int h, int 
         put_u32(&req[8], m_gc_id);
         put_u16(&req[12], (uint16_t)w);
         put_u16(&req[14], (uint16_t)chunk_h);
-        req[16] = 0;  // dst_x low byte
-        req[17] = 0;  // dst_x high byte
-        req[18] = (uint8_t)(y & 0xFF);  // dst_y low byte
-        req[19] = (uint8_t)((y >> 8) & 0xFF);  // dst_y high byte
+        put_u16(&req[16], 0);  // dst_x
+        put_u16(&req[18], (uint16_t)y);  // dst_y
         req[20] = 0;  // left_pad
         req[21] = (uint8_t)depth;
         // data starts at offset 24

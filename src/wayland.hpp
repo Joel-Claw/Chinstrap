@@ -157,6 +157,11 @@ constexpr const char* WL_INTERFACE_SURFACE     = "wl_surface";
 constexpr const char* WL_INTERFACE_KEYBOARD    = "wl_keyboard";
 constexpr const char* WL_INTERFACE_POINTER    = "wl_pointer";
 
+// xdg-shell interface names (for toplevel window management)
+constexpr const char* WL_INTERFACE_XDG_WM_BASE  = "xdg_wm_base";
+constexpr const char* WL_INTERFACE_XDG_SURFACE = "xdg_surface";
+constexpr const char* WL_INTERFACE_XDG_TOPLEVEL = "xdg_toplevel";
+
 // Core interface opcodes (from the Wayland protocol XML)
 // =========================================================================
 // These numeric opcodes identify which request or event is being sent.
@@ -332,8 +337,10 @@ public:
     bool roundtrip();
 
     // Check if we have all required globals
+    // Seat is optional - some compositors may not advertise it immediately,
+    // and it is not needed for display-only purposes.
     bool has_globals() const {
-        return m_compositor_id != 0 && m_shm_id != 0 && m_seat_id != 0;
+        return m_compositor_id != 0 && m_shm_id != 0;
     }
 
     // Getters for global object IDs
@@ -341,6 +348,11 @@ public:
     uint32_t get_shm_id() const { return m_shm_id; }
     uint32_t get_seat_id() const { return m_seat_id; }
     uint32_t get_registry_id() const { return m_registry_id; }
+    uint32_t get_xdg_wm_base_id() const { return m_xdg_wm_base_id; }
+
+    // Register an xdg_surface ID so the connection can handle
+    // configure events automatically (by sending ack_configure).
+    void register_xdg_surface(uint32_t id) { m_event_xdg_surface_id = id; }
 
     // Get the output dimensions (from wl_output)
     int get_output_width() const { return m_output_width; }
@@ -362,6 +374,7 @@ private:
     uint32_t m_shm_id;         // wl_shm
     uint32_t m_seat_id;        // wl_seat
     uint32_t m_output_id;      // wl_output (may be 0 if no output)
+    uint32_t m_xdg_wm_base_id; // xdg_wm_base (may be 0 if not advertised)
 
     // Global version numbers
     uint32_t m_compositor_version;
@@ -400,6 +413,12 @@ private:
     // Helper: process a wl_output mode event
     void handle_output_mode(uint32_t flags, int32_t width, int32_t height);
 
+    // Helper: send xdg_wm_base pong response to a ping
+    void send_xdg_pong(uint32_t serial);
+
+    // Helper: send xdg_surface ack_configure response
+    void send_xdg_ack_configure(uint32_t xdg_surface_id, uint32_t serial);
+
     // We use a callback mechanism for sync round-trips.
     // When we send wl_display::sync, we get a callback done event.
     bool m_sync_done;
@@ -407,6 +426,11 @@ private:
 
     // SHM format support
     bool m_supports_xrgb8888;
+
+    // xdg_surface event handling: when the connection receives an
+    // xdg_surface::configure event, it needs to ack it. The WaylandSurface
+    // registers its xdg_surface_id here so the connection can dispatch.
+    uint32_t m_event_xdg_surface_id;
 
     // Pending events for the GUI layer
     std::vector<WaylandEvent> m_pending_events;
@@ -477,9 +501,7 @@ public:
     // Get the surface object ID
     uint32_t get_surface_id() const { return m_surface_id; }
 
-    // Set the title (using xdg_toplevel, if available).
-    // In this minimal implementation we do not implement xdg_shell,
-    // so this is a no-op. The compositor may still show the surface.
+    // Set the title (using xdg_toplevel::set_title).
     void set_title(const std::string& title);
 
     // Process events from the compositor for this surface.
@@ -491,9 +513,11 @@ private:
     WaylandConnection* m_conn;
 
     // Object IDs
-    uint32_t m_surface_id;    // wl_surface
-    uint32_t m_buffer_id;     // wl_buffer
-    uint32_t m_pool_id;       // wl_shm_pool
+    uint32_t m_surface_id;      // wl_surface
+    uint32_t m_buffer_id;       // wl_buffer
+    uint32_t m_pool_id;         // wl_shm_pool
+    uint32_t m_xdg_surface_id;  // xdg_surface
+    uint32_t m_xdg_toplevel_id; // xdg_toplevel
 
     // Shared memory
     int m_shm_fd;             // file descriptor for the shared memory
@@ -513,6 +537,9 @@ private:
 
     // Helper: create the wl_surface
     bool create_surface(WaylandConnection* conn);
+
+    // Helper: create xdg_surface and xdg_toplevel for window management
+    bool create_xdg_surface(WaylandConnection* conn);
 
     // Helper: generate a unique filename for shm_open
     static std::string shm_filename();

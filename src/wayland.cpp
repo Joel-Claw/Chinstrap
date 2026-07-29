@@ -128,6 +128,7 @@ WaylandConnection::WaylandConnection()
     , m_shm_id(0)
     , m_seat_id(0)
     , m_output_id(0)
+    , m_xdg_wm_base_id(0)
     , m_compositor_version(0)
     , m_shm_version(0)
     , m_seat_version(0)
@@ -136,6 +137,7 @@ WaylandConnection::WaylandConnection()
     , m_sync_done(false)
     , m_sync_callback_id(0)
     , m_supports_xrgb8888(true)  // Assume yes until told otherwise
+    , m_event_xdg_surface_id(0)
 {}
 
 WaylandConnection::~WaylandConnection() {
@@ -287,6 +289,8 @@ void WaylandConnection::disconnect() {
     m_seat_id = 0;
     m_registry_id = 0;
     m_output_id = 0;
+    m_xdg_wm_base_id = 0;
+    m_event_xdg_surface_id = 0;
 }
 
 uint32_t WaylandConnection::allocate_id() {
@@ -584,6 +588,30 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
                 handle_output_mode(flags, width, height);
             }
         }
+    } else if (obj_id == m_xdg_wm_base_id && m_xdg_wm_base_id != 0) {
+        // xdg_wm_base events
+        // opcode 0 = ping
+        if (opcode == 0) {
+            // xdg_wm_base::ping
+            // Args: serial (uint32)
+            // We must respond with xdg_wm_base::pong (opcode 1)
+            if (args_len >= 4) {
+                uint32_t serial = get_u32_le(&args[0]);
+                send_xdg_pong(serial);
+            }
+        }
+    } else if (m_event_xdg_surface_id != 0 && obj_id == m_event_xdg_surface_id) {
+        // xdg_surface events
+        // opcode 0 = configure
+        if (opcode == 0) {
+            // xdg_surface::configure
+            // Args: serial (uint32)
+            // We must respond with xdg_surface::ack_configure (opcode 1)
+            if (args_len >= 4) {
+                uint32_t serial = get_u32_le(&args[0]);
+                send_xdg_ack_configure(m_event_xdg_surface_id, serial);
+            }
+        }
     }
     // Other object IDs (keyboard, pointer, surface, buffer) are handled
     // by the WaylandSurface class, which has its own event processing.
@@ -701,6 +729,12 @@ void WaylandConnection::handle_registry_global(uint32_t name,
     } else if (strcmp(interface, WL_INTERFACE_OUTPUT) == 0) {
         m_output_id = allocate_id();
         send_bind(name, WL_INTERFACE_OUTPUT, 2, m_output_id);
+    } else if (strcmp(interface, WL_INTERFACE_XDG_WM_BASE) == 0) {
+        // Bind to xdg_wm_base for toplevel window management.
+        // Version 6 is widely supported; cap at 6 for compatibility.
+        m_xdg_wm_base_id = allocate_id();
+        uint32_t xdg_version = (version < 6) ? version : 6;
+        send_bind(name, WL_INTERFACE_XDG_WM_BASE, xdg_version, m_xdg_wm_base_id);
     }
 }
 
@@ -731,6 +765,23 @@ void WaylandConnection::handle_output_mode(uint32_t flags, int32_t width,
         m_output_width = static_cast<int>(width);
         m_output_height = static_cast<int>(height);
     }
+}
+
+void WaylandConnection::send_xdg_pong(uint32_t serial) {
+    // xdg_wm_base::pong (opcode 1)
+    // Args: serial (uint32)
+    // Sent in response to xdg_wm_base::ping to prove the client is alive.
+    if (m_xdg_wm_base_id == 0) return;
+    send_message(m_xdg_wm_base_id, 1, &serial, 4);
+}
+
+void WaylandConnection::send_xdg_ack_configure(uint32_t xdg_surface_id,
+                                                  uint32_t serial) {
+    // xdg_surface::ack_configure (opcode 1)
+    // Args: serial (uint32)
+    // Sent in response to xdg_surface::configure to acknowledge the
+    // new configuration before committing.
+    send_message(xdg_surface_id, 1, &serial, 4);
 }
 
 bool WaylandConnection::roundtrip() {
@@ -770,6 +821,8 @@ WaylandSurface::WaylandSurface()
     , m_surface_id(0)
     , m_buffer_id(0)
     , m_pool_id(0)
+    , m_xdg_surface_id(0)
+    , m_xdg_toplevel_id(0)
     , m_shm_fd(-1)
     , m_shm_ptr(nullptr)
     , m_shm_size(0)
@@ -921,6 +974,85 @@ bool WaylandSurface::create_surface(WaylandConnection* conn) {
     return true;
 }
 
+bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
+    // TEACHING NOTE: Creating an xdg_surface and xdg_toplevel
+    // ====================================================================
+    // Modern Wayland compositors require the xdg-shell protocol to show
+    // a toplevel window. Without it, the surface may never appear on
+    // screen. The process is:
+    //
+    // 1. Create an xdg_surface from the wl_surface:
+    //    xdg_wm_base::get_xdg_surface (opcode 1)
+    //    Args: new_id xdg_surface, object wl_surface
+    //
+    // 2. Create an xdg_toplevel from the xdg_surface:
+    //    xdg_surface::get_toplevel (opcode 1)
+    //    Args: new_id xdg_toplevel (no other args except header)
+    //
+    // 3. Set the window title:
+    //    xdg_toplevel::set_title (opcode 0)
+    //    Args: string title
+    //
+    // 4. Commit the surface to make it visible:
+    //    wl_surface::commit (opcode 6)
+    //
+    // The compositor will send xdg_surface::configure events with a
+    // serial that must be acknowledged via xdg_surface::ack_configure
+    // before the next commit.
+
+    // Step 1: Create xdg_surface via xdg_wm_base::get_xdg_surface (opcode 1)
+    m_xdg_surface_id = conn->allocate_id();
+    uint8_t payload[8];
+    put_u32_le(&payload[0], m_xdg_surface_id);  // new_id for xdg_surface
+    put_u32_le(&payload[4], m_surface_id);       // wl_surface object
+    conn->send_message(conn->get_xdg_wm_base_id(), 1, payload, 8);
+
+    // Step 2: Create xdg_toplevel via xdg_surface::get_toplevel (opcode 1)
+    m_xdg_toplevel_id = conn->allocate_id();
+    conn->send_message(m_xdg_surface_id, 1, &m_xdg_toplevel_id, 4);
+
+    // Step 3: Set the title via xdg_toplevel::set_title (opcode 0)
+    // We use a default title; the caller can change it later via set_title().
+    std::string default_title = "Chinstrap";
+    size_t title_len = default_title.size();
+    size_t str_field = 4 + title_len + 1;  // length + chars + null
+    size_t str_padded = pad4(str_field);
+    size_t title_payload_len = str_padded;
+    std::vector<uint8_t> title_msg(8 + title_payload_len, 0);
+    put_u32_le(&title_msg[0], m_xdg_toplevel_id);
+    put_u32_le(&title_msg[4], static_cast<uint32_t>(0) |
+                        (static_cast<uint32_t>(8 + title_payload_len) << 16));
+    size_t pos = 8;
+    put_u32_le(&title_msg[pos], static_cast<uint32_t>(title_len + 1));
+    pos += 4;
+    memcpy(&title_msg[pos], default_title.c_str(), title_len);
+    pos += title_len;
+    title_msg[pos] = 0;  // null terminator
+
+    // Send the set_title message via write()
+    if (conn->get_fd() >= 0) {
+        const uint8_t* bytes = title_msg.data();
+        size_t total = 0;
+        while (total < title_msg.size()) {
+            ssize_t n = ::write(conn->get_fd(), bytes + total,
+                               title_msg.size() - total);
+            if (n <= 0) {
+                return false;
+            }
+            total += static_cast<size_t>(n);
+        }
+    }
+
+    // Step 4: Commit the surface to trigger initial configuration
+    // wl_surface::commit (opcode 6)
+    conn->send_message(m_surface_id, 6, nullptr, 0);
+
+    // Register the xdg_surface ID so the connection handles configure events
+    conn->register_xdg_surface(m_xdg_surface_id);
+
+    return true;
+}
+
 bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
     if (!conn || !conn->is_connected()) return false;
     if (width <= 0 || height <= 0) return false;
@@ -939,6 +1071,15 @@ bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
         return false;
     }
 
+    // Create xdg_surface and xdg_toplevel for window management.
+    // This is required for the compositor to show our surface as a toplevel window.
+    // If xdg_wm_base is not available, we skip it and the surface may not be visible.
+    if (conn->get_xdg_wm_base_id() != 0) {
+        if (!create_xdg_surface(conn)) {
+            return false;
+        }
+    }
+
     // Flush all requests to the compositor
     // We need to ensure all messages are sent before we try to commit.
     // In a real implementation, we would use wl_display::flush() or
@@ -951,6 +1092,18 @@ bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
 
 void WaylandSurface::destroy() {
     if (!m_initialized) return;
+
+    // Destroy the xdg_toplevel
+    if (m_xdg_toplevel_id && m_conn) {
+        // xdg_toplevel::destroy (opcode 1)
+        m_conn->send_message(m_xdg_toplevel_id, 1, nullptr, 0);
+    }
+
+    // Destroy the xdg_surface
+    if (m_xdg_surface_id && m_conn) {
+        // xdg_surface::destroy (opcode 0)
+        m_conn->send_message(m_xdg_surface_id, 0, nullptr, 0);
+    }
 
     // Destroy the surface
     if (m_surface_id && m_conn) {
@@ -986,6 +1139,8 @@ void WaylandSurface::destroy() {
     m_surface_id = 0;
     m_buffer_id = 0;
     m_pool_id = 0;
+    m_xdg_surface_id = 0;
+    m_xdg_toplevel_id = 0;
     m_initialized = false;
 }
 
@@ -1049,18 +1204,43 @@ void WaylandSurface::set_title(const std::string& title) {
     // TEACHING NOTE: Setting the window title in Wayland
     // ====================================================================
     // In Wayland, window titles are set via the xdg-shell protocol
-    // extension (xdg_toplevel::set_title). We do not implement
-    // xdg-shell in this minimal implementation, so setting the title
-    // is a no-op. The compositor may show a default title or no title.
+    // extension (xdg_toplevel::set_title). We send the title string
+    // to the xdg_toplevel object created during surface initialization.
     //
-    // To implement this properly, we would need to:
-    //   1. Bind to xdg_wm_base (advertised as "xdg_wm_base" global)
-    //   2. Create an xdg_surface from our wl_surface
-    //   3. Create an xdg_toplevel from the xdg_surface
-    //   4. Call xdg_toplevel::set_title with the title string
-    //
-    // This is left as a future enhancement.
-    (void)title;
+    // Request: xdg_toplevel::set_title (opcode 0)
+    // Args: string title (uint32 length + chars + null + padding)
+
+    if (!m_initialized || !m_conn || m_xdg_toplevel_id == 0) return;
+
+    size_t title_len = title.size();
+    size_t str_field = 4 + title_len + 1;  // length + chars + null
+    size_t str_padded = pad4(str_field);
+    size_t payload_len = str_padded;
+    size_t total = 8 + payload_len;
+
+    std::vector<uint8_t> msg(total, 0);
+    put_u32_le(&msg[0], m_xdg_toplevel_id);
+    put_u32_le(&msg[4], static_cast<uint32_t>(0) |
+                        (static_cast<uint32_t>(total) << 16));  // opcode=0
+
+    size_t pos = 8;
+    put_u32_le(&msg[pos], static_cast<uint32_t>(title_len + 1));
+    pos += 4;
+    memcpy(&msg[pos], title.c_str(), title_len);
+    pos += title_len;
+    msg[pos] = 0;  // null terminator
+
+    // Send the set_title message via write()
+    if (m_conn->get_fd() >= 0) {
+        const uint8_t* bytes = msg.data();
+        size_t sent = 0;
+        while (sent < msg.size()) {
+            ssize_t n = ::write(m_conn->get_fd(), bytes + sent,
+                               msg.size() - sent);
+            if (n <= 0) return;
+            sent += static_cast<size_t>(n);
+        }
+    }
 }
 
 // TEACHING NOTE: Processing Wayland surface events
