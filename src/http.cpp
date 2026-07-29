@@ -469,12 +469,10 @@ HttpResponse HttpClient::send(const HttpRequest& request, int max_redirects) {
             throw std::runtime_error("Failed to send request to " + current.host);
         }
 
-        // Shutdown the write side (tell server we are done sending)
-        // TEACHING NOTE: shutdown(SHUT_WR) sends a FIN to the server,
-        // signaling that we will not send any more data. The server can
-        // then finish its response and close the connection. Without
-        // this, the server might wait for more data and we would hang.
-        ::shutdown(socket_fd_, SHUT_WR);
+        // NOTE: We do NOT call shutdown(SHUT_WR) here because some servers
+        // close the connection immediately upon receiving FIN, before
+        // sending their response. Instead, we rely on Connection: close
+        // in the request headers to tell the server to close after responding.
 
         // Read the response
         std::string raw_response = read_response();
