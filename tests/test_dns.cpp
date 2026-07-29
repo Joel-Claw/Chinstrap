@@ -231,7 +231,7 @@ static void test_encode_name() {
 
     // Verify question section
     // The name should be: \x07example\x03com\x00
-    size_t offset = 12;  // After header
+    size_t offset = 12; (void)offset;  // After header
     assert(query[offset] == 7);  // First label length
     assert(query[offset+1] == 'e');
     assert(query[offset+2] == 'x');
@@ -305,7 +305,7 @@ static void test_nxdomain_response() {
     auto response = build_nxdomain_response();
     DnsResolver resolver;
 
-    bool got_error = false;
+    bool got_error = false; (void)got_error;
     try {
         resolver.parse_response(response, DnsType::A);
     } catch (const std::runtime_error& e) {

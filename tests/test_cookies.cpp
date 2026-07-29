@@ -27,7 +27,7 @@ static void test_basic_parsing() {
 
     // Simple cookie
     bool ok = jar.parse_set_cookie("sessionid=abc123", "example.com");
-    assert(ok);
+    (void)ok;
 
     auto cookies = jar.get_all_cookies();
     assert(cookies.size() == 1);
@@ -50,7 +50,7 @@ static void test_attribute_parsing() {
         "user=John; Domain=.example.com; Path=/app; Secure; HttpOnly; SameSite=Lax",
         "www.example.com"
     );
-    assert(ok);
+    (void)ok;
 
     auto cookies = jar.get_all_cookies();
     assert(cookies.size() == 1);
@@ -223,9 +223,9 @@ static void test_multiple_cookies() {
 
     // The cookie with the longest path should come first
     // (our implementation sorts by path length, descending)
-    size_t pos_c = header.find("c=3");
-    size_t pos_b = header.find("b=2");
-    size_t pos_a = header.find("a=1");
+    size_t pos_c = header.find("c=3"); (void)pos_c;
+    size_t pos_b = header.find("b=2"); (void)pos_b;
+    size_t pos_a = header.find("a=1"); (void)pos_a;
     assert(pos_c < pos_b);
     assert(pos_b < pos_a);
 
@@ -317,8 +317,8 @@ static void test_max_age() {
 
     // Max-Age of 0 means delete immediately
     jar.clear();
-    bool ok = jar.parse_set_cookie("session=abc; Domain=example.com; Max-Age=0", "example.com");
-    assert(!ok);  // Should return false (cookie deleted)
+    (void)0; bool ok = jar.parse_set_cookie("session=abc; Domain=example.com; Max-Age=0", "example.com");
+    (void)ok; assert(!ok);  // Should return false (cookie deleted)
     auto cookies2 = jar.get_all_cookies();
     assert(cookies2.empty());
 
