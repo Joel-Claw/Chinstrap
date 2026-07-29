@@ -229,8 +229,19 @@ private:
     // URL to display in the browser UI frame (for screenshots)
     std::string screenshot_url_;
 
-    // Draw the browser UI frame (address bar, nav buttons) at the top
+    // Draw the browser UI frame (tab bar, nav icons, address bar) at the top
     void draw_browser_ui(int width, int ui_height);
+
+    // UI helper functions for modern browser chrome
+    void fill_rounded_rect(int x, int y, int w, int h, int radius, const RenderColor& color);
+    void draw_h_line(int x0, int x1, int y, const RenderColor& color);
+    void draw_v_line(int x, int y0, int y1, const RenderColor& color);
+    void draw_icon_back(int cx, int cy, int size, const RenderColor& color);
+    void draw_icon_forward(int cx, int cy, int size, const RenderColor& color);
+    void draw_icon_reload(int cx, int cy, int size, const RenderColor& color);
+    void draw_icon_home(int cx, int cy, int size, const RenderColor& color);
+    void draw_icon_menu(int cx, int cy, int size, const RenderColor& color);
+    void draw_icon_plus(int cx, int cy, int size, const RenderColor& color);
 };
 
 } // namespace chinstrap

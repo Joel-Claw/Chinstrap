@@ -1507,61 +1507,354 @@ void Renderer::render_to_stdout(const Box& root) {
 // =========================================================================
 
 // =========================================================================
-// draw_browser_ui - Draw browser chrome (address bar, nav buttons)
+// UI helper functions for modern browser chrome
+// =========================================================================
+// TEACHING NOTE: These helpers draw the pixel-art icons and rounded
+// rectangles that make up the browser UI. Real browsers use vector
+// graphics (SVG paths) for icons, rendered via Skia or similar. We
+// draw pixels directly since we have no graphics library.
+// =========================================================================
+
+void Renderer::fill_rounded_rect(int x, int y, int w, int h, int radius, const RenderColor& color) {
+    // Fill the inner area, then fill the four corner quadrants
+    int r = std::min(radius, std::min(w / 2, h / 2));
+    if (r < 1) { fill_rect(x, y, w, h, color); return; }
+
+    // Middle horizontal bands (full width)
+    fill_rect(x, y + r, w, h - 2 * r, color);
+    // Top band (between corners)
+    fill_rect(x + r, y, w - 2 * r, r, color);
+    // Bottom band (between corners)
+    fill_rect(x + r, y + h - r, w - 2 * r, r, color);
+
+    // Four rounded corners using distance check
+    int r2 = r * r;
+
+    for (int dy = 0; dy < r; dy++) {
+        for (int dx = 0; dx < r; dx++) {
+            // Top-left corner
+            int ddx = r - 1 - dx;
+            int ddy = r - 1 - dy;
+            if (ddx * ddx + ddy * ddy <= r2) {
+                put_pixel_internal(x + dx, y + dy, color);
+            }
+            // Top-right corner
+            ddx = dx;
+            ddy = r - 1 - dy;
+            if (ddx * ddx + ddy * ddy <= r2) {
+                put_pixel_internal(x + w - r + dx, y + dy, color);
+            }
+            // Bottom-left corner
+            ddx = r - 1 - dx;
+            ddy = dy;
+            if (ddx * ddx + ddy * ddy <= r2) {
+                put_pixel_internal(x + dx, y + h - r + dy, color);
+            }
+            // Bottom-right corner
+            ddx = dx;
+            ddy = dy;
+            if (ddx * ddx + ddy * ddy <= r2) {
+                put_pixel_internal(x + w - r + dx, y + h - r + dy, color);
+            }
+        }
+    }
+}
+
+void Renderer::draw_h_line(int x0, int x1, int y, const RenderColor& color) {
+    int xs = std::min(x0, x1);
+    int xe = std::max(x0, x1);
+    for (int x = xs; x <= xe; x++) {
+        put_pixel_internal(x, y, color);
+    }
+}
+
+void Renderer::draw_v_line(int x, int y0, int y1, const RenderColor& color) {
+    int ys = std::min(y0, y1);
+    int ye = std::max(y0, y1);
+    for (int y = ys; y <= ye; y++) {
+        put_pixel_internal(x, y, color);
+    }
+}
+
+// Back arrow icon: left-pointing triangle with stem
+void Renderer::draw_icon_back(int cx, int cy, int size, const RenderColor& color) {
+    int half = size / 2;
+    // Triangle part (left-pointing)
+    for (int row = -half; row <= half; row++) {
+        int tri_width = half + 1 - std::abs(row);
+        for (int col = 0; col < tri_width; col++) {
+            put_pixel_internal(cx - half + col, cy + row, color);
+        }
+    }
+    // Stem (horizontal bar to the right of triangle)
+    int stem_y0 = cy - size / 6;
+    int stem_y1 = cy + size / 6;
+    int stem_x0 = cx;
+    int stem_x1 = cx + half;
+    for (int y = stem_y0; y <= stem_y1; y++) {
+        for (int x = stem_x0; x <= stem_x1; x++) {
+            put_pixel_internal(x, y, color);
+        }
+    }
+}
+
+// Forward arrow icon: right-pointing triangle with stem
+void Renderer::draw_icon_forward(int cx, int cy, int size, const RenderColor& color) {
+    int half = size / 2;
+    // Triangle part (right-pointing)
+    for (int row = -half; row <= half; row++) {
+        int tri_width = half + 1 - std::abs(row);
+        for (int col = 0; col < tri_width; col++) {
+            put_pixel_internal(cx + half - col, cy + row, color);
+        }
+    }
+    // Stem (horizontal bar to the left of triangle)
+    int stem_y0 = cy - size / 6;
+    int stem_y1 = cy + size / 6;
+    int stem_x0 = cx - half;
+    int stem_x1 = cx;
+    for (int y = stem_y0; y <= stem_y1; y++) {
+        for (int x = stem_x0; x <= stem_x1; x++) {
+            put_pixel_internal(x, y, color);
+        }
+    }
+}
+
+// Reload icon: circular arrow (partial circle with arrowhead)
+void Renderer::draw_icon_reload(int cx, int cy, int size, const RenderColor& color) {
+    int r = size / 2;
+    // Draw most of a circle (skip top-right quadrant where arrowhead goes)
+    for (int angle_deg = 30; angle_deg < 360; angle_deg += 3) {
+        double rad = static_cast<double>(angle_deg) * 3.14159265 / 180.0;
+        int px = cx + static_cast<int>(r * std::cos(rad));
+        int py = cy + static_cast<int>(r * std::sin(rad));
+        put_pixel_internal(px, py, color);
+    }
+    // Arrowhead at the top (where the circle breaks)
+    // Two short diagonal lines forming a chevron pointing right
+    for (int i = 0; i < 4; i++) {
+        put_pixel_internal(cx + r - i, cy - i, color);
+        put_pixel_internal(cx + r - i, cy + i, color);
+    }
+}
+
+// Home icon: house shape (triangle roof + square body)
+void Renderer::draw_icon_home(int cx, int cy, int size, const RenderColor& color) {
+    int half = size / 2;
+    // Roof: triangle pointing up
+    for (int row = 0; row <= half; row++) {
+        int span = row;
+        for (int col = -span; col <= span; col++) {
+            put_pixel_internal(cx + col, cy - half + row, color);
+        }
+    }
+    // Body: filled rectangle below roof
+    int body_top = cy + 1;
+    int body_bot = cy + half;
+    int body_left = cx - half + 2;
+    int body_right = cx + half - 2;
+    // Draw outline of body (left and right walls)
+    for (int y = body_top; y <= body_bot; y++) {
+        put_pixel_internal(body_left, y, color);
+        put_pixel_internal(body_right, y, color);
+    }
+    // Bottom wall
+    for (int x = body_left; x <= body_right; x++) {
+        put_pixel_internal(x, body_bot, color);
+    }
+    // Door in center bottom
+    int door_w = std::max(2, (body_right - body_left) / 4);
+    int door_l = cx - door_w / 2;
+    int door_r = cx + door_w / 2;
+    for (int x = door_l; x <= door_r; x++) {
+        for (int y = body_bot - door_w; y <= body_bot; y++) {
+            put_pixel_internal(x, y, color);
+        }
+    }
+}
+
+// Menu/hamburger icon: three horizontal lines
+void Renderer::draw_icon_menu(int cx, int cy, int size, const RenderColor& color) {
+    int half = size / 2;
+    int gap = size / 3;
+    for (int i = -1; i <= 1; i++) {
+        int y = cy + i * gap;
+        for (int dx = -half; dx < half; dx++) {
+            put_pixel_internal(cx + dx, y, color);
+        }
+    }
+}
+
+// Plus icon: horizontal and vertical bars forming a +
+void Renderer::draw_icon_plus(int cx, int cy, int size, const RenderColor& color) {
+    int half = size / 3;
+    int bar_len = half;
+    int bar_thick = std::max(1, size / 6);
+    // Horizontal bar
+    for (int dx = -bar_len; dx <= bar_len; dx++) {
+        for (int dy = -bar_thick / 2; dy <= bar_thick / 2 + 1; dy++) {
+            put_pixel_internal(cx + dx, cy + dy, color);
+        }
+    }
+    // Vertical bar
+    for (int dy = -bar_len; dy <= bar_len; dy++) {
+        for (int dx = -bar_thick / 2; dx < bar_thick / 2 + 1; dx++) {
+            put_pixel_internal(cx + dx, cy + dy, color);
+        }
+    }
+}
+
+// =========================================================================
+// draw_browser_ui - Draw modern browser chrome
 // =========================================================================
 // TEACHING NOTE: A real browser has UI elements around the page content:
-// tab bar, address bar, back/forward buttons, menu, etc. For screenshots,
-// we draw a simplified browser frame so the screenshot looks like a browser
-// window, not just a raw page render.
+// tab bar, address bar, back/forward buttons, menu, etc. We draw a
+// modern-looking browser chrome with:
+//   - Tab bar with rounded active tab and inactive tabs (36px)
+//   - Navigation toolbar with pixel-art icons (44px)
+//   - Rounded address bar with URL text and favicon placeholder
+//   - Hamburger menu button on the right
+//   - Clean light color scheme with subtle shadows
 // =========================================================================
 
 void Renderer::draw_browser_ui(int width, int ui_height) {
-    // Top bar background: dark gray (#333333)
-    RenderColor bar_bg(0x33, 0x33, 0x33);
-    fill_rect(0, 0, width, ui_height, bar_bg);
+    (void)ui_height;  // We use fixed heights for tab bar and toolbar
 
-    // Back button (left side): light gray rect at x=8
-    RenderColor btn_color(0x88, 0x88, 0x88);
-    fill_rect(8, 10, 24, 20, btn_color);
-    // Draw a left-pointing arrow in white inside the back button
-    RenderColor arrow_white(255, 255, 255);
-    for (int i = 0; i < 10; i++) {
-        put_pixel_internal(12 + i, 20 - i, arrow_white);
-        put_pixel_internal(12 + i, 20 + i, arrow_white);
-    }
-    for (int i = 0; i < 6; i++) {
-        put_pixel_internal(18, 20 - 5 + i, arrow_white);
+    // -- Color scheme --
+    RenderColor tab_bar_bg(0xDE, 0xDE, 0xDE);    // #DEDEDE light gray
+    RenderColor toolbar_bg(0xF5, 0xF5, 0xF5);    // #F5F5F5 very light
+    RenderColor active_tab_bg(255, 255, 255);    // white
+    RenderColor inactive_tab_bg(0xE8, 0xE8, 0xE8); // #E8E8E8
+    RenderColor icon_color(0x55, 0x55, 0x55);    // #555555 dark gray
+    RenderColor addr_bar_bg(255, 255, 255);      // white
+    RenderColor addr_bar_border(0xD0, 0xD0, 0xD0); // #D0D0D0
+    RenderColor url_text(0x33, 0x33, 0x33);      // #333333
+    RenderColor shadow(0xC8, 0xC8, 0xC8);        // subtle shadow
+    RenderColor separator(0xD8, 0xD8, 0xD8);     // thin separator
+    RenderColor favicon_bg(0x4A, 0x90, 0xD9);    // blue circle
+    RenderColor new_tab_color(0x88, 0x88, 0x88); // gray plus
+
+    const int tab_bar_h = 36;
+    const int toolbar_h = 44;
+    const int total_ui_h = tab_bar_h + toolbar_h;  // 80
+
+    // -- Tab bar background --
+    fill_rect(0, 0, width, tab_bar_h, tab_bar_bg);
+
+    // -- Draw tabs --
+    // Active tab (first tab) - white with rounded top corners
+    int tab_w = 180;
+    int tab_h = tab_bar_h;
+    int tab_x = 8;
+    int tab_y = 0;
+
+    // Active tab: white background with rounded top corners
+    fill_rect(tab_x, tab_y, tab_w, tab_h, active_tab_bg);
+    // Round the top-left and top-right corners of active tab
+    // Top-left corner: fill with tab_bar_bg to carve the corner
+    put_pixel_internal(tab_x, tab_y, tab_bar_bg);
+    put_pixel_internal(tab_x + 1, tab_y, tab_bar_bg);
+    put_pixel_internal(tab_x, tab_y + 1, tab_bar_bg);
+    // Top-right corner
+    put_pixel_internal(tab_x + tab_w - 1, tab_y, tab_bar_bg);
+    put_pixel_internal(tab_x + tab_w - 2, tab_y, tab_bar_bg);
+    put_pixel_internal(tab_x + tab_w - 1, tab_y + 1, tab_bar_bg);
+
+    // Active tab text
+    draw_text(tab_x + 12, tab_y + 11, "Example", url_text);
+
+    // Inactive tab (second tab) - light gray, slightly shorter
+    int tab2_x = tab_x + tab_w + 2;
+    int tab2_w = 140;
+    // Inactive tab background (same as tab bar, so just draw text)
+    // Add subtle left separator
+    draw_v_line(tab2_x, 6, tab_bar_h - 6, separator);
+    draw_text(tab2_x + 12, tab_y + 11, "New Tab", RenderColor(0x77, 0x77, 0x77));
+
+    // New tab button (+ icon)
+    int plus_x = tab2_x + tab2_w + 12;
+    int plus_y = tab_bar_h / 2;
+    draw_icon_plus(plus_x, plus_y, 10, new_tab_color);
+
+    // -- Subtle shadow below tab bar --
+    draw_h_line(0, width - 1, tab_bar_h, shadow);
+    draw_h_line(0, width - 1, tab_bar_h + 1, RenderColor(0xE8, 0xE8, 0xE8));
+
+    // -- Navigation toolbar --
+    int tb_y = tab_bar_h;
+    fill_rect(0, tb_y, width, toolbar_h, toolbar_bg);
+
+    // Navigation buttons: back, forward, reload, home
+    // Each button is a clickable area with an icon centered in it
+    int btn_size = 28;
+    int btn_spacing = 4;
+    int btn_y = tb_y + (toolbar_h - btn_size) / 2;
+    int btn_x = 8;
+
+    // Back button
+    draw_icon_back(btn_x + btn_size / 2, btn_y + btn_size / 2, 14, icon_color);
+    btn_x += btn_size + btn_spacing;
+
+    // Forward button
+    draw_icon_forward(btn_x + btn_size / 2, btn_y + btn_size / 2, 14, icon_color);
+    btn_x += btn_size + btn_spacing;
+
+    // Reload button
+    draw_icon_reload(btn_x + btn_size / 2, btn_y + btn_size / 2, 14, icon_color);
+    btn_x += btn_size + btn_spacing;
+
+    // Home button
+    draw_icon_home(btn_x + btn_size / 2, btn_y + btn_size / 2, 14, icon_color);
+    btn_x += btn_size + btn_spacing + 8;  // extra gap before address bar
+
+    // -- Address bar (rounded rectangle) --
+    int addr_x = btn_x;
+    int addr_y = tb_y + (toolbar_h - 28) / 2;
+    int addr_w = width - addr_x - 40;  // leave room for menu button
+    int addr_h = 28;
+    int addr_radius = 14;  // fully rounded ends
+
+    // Address bar shadow (1px below and right)
+    fill_rounded_rect(addr_x + 1, addr_y + 1, addr_w, addr_h, addr_radius,
+                      RenderColor(0xE0, 0xE0, 0xE0));
+    // Address bar background
+    fill_rounded_rect(addr_x, addr_y, addr_w, addr_h, addr_radius, addr_bar_bg);
+    // Address bar border (subtle outline)
+    // Top and bottom borders
+    draw_h_line(addr_x + addr_radius, addr_x + addr_w - addr_radius - 1, addr_y, addr_bar_border);
+    draw_h_line(addr_x + addr_radius, addr_x + addr_w - addr_radius - 1, addr_y + addr_h - 1, addr_bar_border);
+    // Left and right borders
+    draw_v_line(addr_x + addr_radius - 1, addr_y + 1, addr_y + addr_h - 2, addr_bar_border);
+    draw_v_line(addr_x + addr_w - addr_radius, addr_y + 1, addr_y + addr_h - 2, addr_bar_border);
+
+    // Favicon placeholder (colored circle on left side of address bar)
+    int fav_cx = addr_x + 14;
+    int fav_cy = addr_y + addr_h / 2;
+    int fav_r = 6;
+    for (int dy = -fav_r; dy <= fav_r; dy++) {
+        for (int dx = -fav_r; dx <= fav_r; dx++) {
+            if (dx * dx + dy * dy <= fav_r * fav_r) {
+                put_pixel_internal(fav_cx + dx, fav_cy + dy, favicon_bg);
+            }
+        }
     }
 
-    // Forward button: light gray rect at x=40
-    fill_rect(40, 10, 24, 20, btn_color);
-    // Draw a right-pointing arrow in white inside the forward button
-    for (int i = 0; i < 10; i++) {
-        put_pixel_internal(54 - i, 20 - i, arrow_white);
-        put_pixel_internal(54 - i, 20 + i, arrow_white);
-    }
-    for (int i = 0; i < 6; i++) {
-        put_pixel_internal(48, 20 - 5 + i, arrow_white);
-    }
-
-    // Address bar: white rect from x=72 to width-10
-    RenderColor addr_bg(255, 255, 255);
-    int addr_x = 72;
-    int addr_y = 8;
-    int addr_w = width - addr_x - 10;
-    int addr_h = 24;
-    fill_rect(addr_x, addr_y, addr_w, addr_h, addr_bg);
-
-    // URL text in the address bar (black text)
+    // URL text in the address bar
     if (!screenshot_url_.empty()) {
-        // Truncate URL if too long for the address bar
-        int max_url_width = addr_w - 10;
-        draw_text(addr_x + 5, addr_y + 4, screenshot_url_, RenderColor::black(), max_url_width);
+        int text_x = addr_x + 26;  // after favicon
+        int text_y = addr_y + (addr_h - 16) / 2 + 1;  // vertically centered
+        int max_url_width = addr_w - 36;  // padding on both sides
+        draw_text(text_x, text_y, screenshot_url_, url_text, max_url_width);
     }
 
-    // Thin separator line below the UI bar
-    RenderColor sep(0x55, 0x55, 0x55);
-    fill_rect(0, ui_height - 1, width, 1, sep);
+    // -- Menu/hamburger button (right side) --
+    int menu_x = width - 24;
+    int menu_y = tb_y + toolbar_h / 2;
+    draw_icon_menu(menu_x, menu_y, 16, icon_color);
+
+    // -- Shadow below toolbar --
+    draw_h_line(0, width - 1, total_ui_h - 1, RenderColor(0xD0, 0xD0, 0xD0));
+    draw_h_line(0, width - 1, total_ui_h, RenderColor(0xE0, 0xE0, 0xE0));
 }
 
 void Renderer::render_to_ppm(const Box& root, const std::string& filename,
@@ -1590,12 +1883,13 @@ void Renderer::render_to_ppm(const Box& root, const std::string& filename,
     initialized_ = true;
 
     // Draw the browser UI frame at the top
-    // TEACHING NOTE: We draw a simplified browser chrome with:
-    //   - Dark gray top bar (40px tall)
-    //   - Back/forward button shapes
-    //   - White address bar with the URL text
-    //   - Page content below the UI bar
-    const int ui_height = 40;
+    // TEACHING NOTE: We draw a modern browser chrome with:
+    //   - Tab bar with active/inactive tabs (36px)
+    //   - Navigation toolbar with pixel-art icons (44px)
+    //   - Rounded address bar with URL and favicon
+    //   - Menu button on the right
+    //   - Page content starts at y=80
+    const int ui_height = 80;  // 36px tab bar + 44px toolbar
     draw_browser_ui(width, ui_height);
 
     // Render the page content below the UI bar
