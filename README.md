@@ -1,6 +1,8 @@
 # Chinstrap
 
-<img src="assets/logo.svg" alt="Chinstrap logo" width="200">
+<p align="center">
+  <img src="assets/logo.svg" alt="Chinstrap logo" width="200">
+</p>
 
 A web browser built from scratch with **zero third-party libraries**. Only the
 C++17 standard library and POSIX system calls. No rendering engine, no JS

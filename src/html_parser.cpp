@@ -82,7 +82,7 @@ std::vector<const Node*> Node::get_elements_by_tag(const std::string& tag) const
     std::vector<const Node*> result;
     for (const auto& child : children) {
         if (child->type == NodeType::Element) {
-            if (child->tag_name == tag) {
+            if (tag == "*" || child->tag_name == tag) {
                 result.push_back(child.get());
             }
             auto nested = child->get_elements_by_tag(tag);
