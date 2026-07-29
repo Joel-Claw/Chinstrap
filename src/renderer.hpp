@@ -174,6 +174,12 @@ public:
     // Fallback: render to stdout (for when framebuffer is not available)
     void render_to_stdout(const Box& root);
 
+    // Render to an off-screen buffer and save as PPM file
+    // TEACHING NOTE: PPM is the simplest image format - just a header
+    // followed by raw RGB pixels. This lets us take screenshots without
+    // any image encoding library. We can convert PPM to PNG with tools.
+    void render_to_ppm(const Box& root, const std::string& filename, int width = 1024, int height = 768);
+
 private:
     int fb_fd_ = -1;
     FramebufferInfo fb_info_;

@@ -1,4 +1,4 @@
-// display.hpp - Display abstraction with framebuffer and X11 backends
+// display.hpp - Display abstraction with framebuffer, X11, and Wayland backends
 //
 // TEACHING NOTE: How computer displays work
 // ===========================================================================
@@ -22,6 +22,14 @@
 //   sends the final pixels to the display. This is more complex but allows
 //   windowed operation alongside other applications.
 //
+// Wayland mode:
+//   Wayland is the modern replacement for X11 on Linux. Instead of a
+//   central X server, the Wayland compositor directly manages clients.
+//   We connect to the compositor via a Unix socket, create a surface,
+//   and share pixel data via shared memory (shm). The compositor composites
+//   our surface with others and presents the result. Wayland is simpler
+//   and more secure than X11 (clients cannot read other clients surfaces).
+//
 // Double buffering and vsync:
 //   If we draw directly to the visible framebuffer, the user might see
 //   partially-drawn frames (tearing). Double buffering uses two buffers:
@@ -30,7 +38,8 @@
 //   synchronized to the vertical retrace period (vsync) to avoid tearing.
 //   On the framebuffer, we use the FBIOPAN_DISPLAY ioctl to pan the display
 //   to the other buffer. In X11, we draw to a pixmap and then copy it to
-//   the window on Expose events.
+//   the window on Expose events. In Wayland, we attach a shared memory buffer
+//   to the surface and commit it.
 
 #pragma once
 
@@ -80,15 +89,17 @@ struct Color {
 
 // TEACHING NOTE: Display backend types
 // =========================================================================
-// The browser needs to support two modes:
+// The browser supports three display modes:
 //   1. FRAMEBUFFER - direct /dev/fb0 access, for kiosk/embedded/headless use
 //   2. X11 - for desktop use within an existing X session
+//   3. WAYLAND - for desktop use within a Wayland compositor session
 // The abstraction lets the rest of the browser code not care which backend
-// is active. Both provide the same interface: put_pixel, fill_rect, etc.
+// is active. All provide the same interface: put_pixel, fill_rect, etc.
 
 enum class DisplayBackend {
     FRAMEBUFFER,
-    X11
+    X11,
+    WAYLAND
 };
 
 class Display {
@@ -99,6 +110,7 @@ public:
     // Initialize the display with the given backend
     // For framebuffer: opens /dev/fb0, mmaps it
     // For X11: connects to X server, creates a window
+    // For Wayland: connects to compositor, creates a surface with shm buffer
     bool init(DisplayBackend backend, int width = 0, int height = 0);
 
     // Shut down and release resources
@@ -133,6 +145,7 @@ public:
     // Swap back buffer to front (make drawn content visible)
     // In framebuffer mode: uses FBIOPAN_DISPLAY for double-buffered flipping
     // In X11 mode: copies pixmap to window and flushes
+    // In Wayland mode: attaches shm buffer to surface and commits
     void flip();
 
     // Get the display dimensions
@@ -154,10 +167,11 @@ public:
     // Get line stride (bytes per row, may be > width * bpp due to alignment)
     int get_stride() const { return m_stride; }
 
-    // Set window title (X11 mode only, no-op in framebuffer mode)
+    // Set window title (X11/Wayland mode, no-op in framebuffer mode)
     void set_title(const std::string& title);
 
     // Process display events (X11 mode: handle Expose, etc.)
+    // (Wayland mode: handle keyboard/pointer events)
     // Returns true if the display is still valid, false if window was closed.
     bool process_events();
 
@@ -190,6 +204,12 @@ private:
     void* m_x11_conn;     // opaque pointer to X11 connection state
     void* m_x11_window;  // opaque pointer to window info
 
+    // --- Wayland-specific ---
+    // These are stored as void* to avoid exposing Wayland types in the header.
+    // The actual Wayland connection is managed in wayland.cpp
+    void* m_wl_conn;     // opaque pointer to Wayland connection state
+    void* m_wl_surface; // opaque pointer to Wayland surface info
+
     // Allow GUI to access X11 internals for event dispatch
     friend class GUI;
 
@@ -202,14 +222,23 @@ private:
     // Helper: initialize X11 backend
     bool init_x11(int width, int height);
 
+    // Helper: initialize Wayland backend
+    bool init_wayland(int width, int height);
+
     // Helper: flip for framebuffer backend
     void flip_framebuffer();
 
     // Helper: flip for X11 backend
     void flip_x11();
 
+    // Helper: flip for Wayland backend
+    void flip_wayland();
+
     // Helper: process events for X11 backend
     bool process_x11_events();
+
+    // Helper: process events for Wayland backend
+    bool process_wayland_events();
 };
 
 } // namespace chinstrap

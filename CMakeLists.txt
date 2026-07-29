@@ -68,9 +68,10 @@ set(CHINSTRAP_LIB_SOURCES
     src/js_builtins.cpp
     src/js_dom.cpp
 
-    # GUI: Display, X11, fonts, widgets, input, images, zlib
+    # GUI: Display, X11, Wayland, fonts, widgets, input, images, zlib
     src/display.cpp
     src/x11.cpp
+    src/wayland.cpp
     src/font.cpp
     src/gui.cpp
     src/input.cpp
@@ -132,10 +133,78 @@ foreach(TEST_SOURCE ${CHINSTRAP_TEST_SOURCES})
 endforeach()
 
 # -------------------------------------------------------------------------
+# Plugin system - Example plugin as a shared library
+# -------------------------------------------------------------------------
+# TEACHING NOTE: A plugin is a shared library (.so on Linux) that the
+# browser loads at runtime via dlopen(). We compile the example plugin
+# separately from the main binary. The -fPIC flag (Position Independent
+# Code) is required for shared libraries on Linux - it allows the code to
+# be loaded at any address.
+#
+# The plugin only needs the plugin_types.h header, not the full browser
+# source. That is the whole point of the plugin API: plugins are
+# decoupled from the browser internals.
+# -------------------------------------------------------------------------
+add_library(chinstrap_example_plugin SHARED
+    plugins/example/example_plugin.cpp
+)
+target_include_directories(chinstrap_example_plugin PRIVATE include)
+target_compile_options(chinstrap_example_plugin PRIVATE ${CHINSTRAP_WARNING_FLAGS})
+# Set the output name to something friendly. Without this, CMake would
+# name it "libchinstrap_example_plugin.so". We use "chinstrap_example"
+# so the file is "libchinstrap_example.so".
+set_target_properties(chinstrap_example_plugin PROPERTIES
+    OUTPUT_NAME "chinstrap_example"
+)
+
+# -------------------------------------------------------------------------
 # Install targets
 # -------------------------------------------------------------------------
+# TEACHING NOTE: The install() commands tell CMake where to put files
+# when the user runs "make install" or when CPack builds a package.
+# Each install() rule copies files from the build directory to the
+# install prefix (usually /usr on Linux).
+#
+# DESTINATION paths are relative to the install prefix:
+#   bin                               -> /usr/bin/chinstrap
+#   include/chinstrap                 -> /usr/include/chinstrap/*.h
+#   share/applications                -> /usr/share/applications/chinstrap.desktop
+#   share/icons/hicolor/scalable/apps -> /usr/share/icons/hicolor/scalable/apps/chinstrap.svg
+# -------------------------------------------------------------------------
+
+# The browser binary -> /usr/bin/chinstrap
 install(TARGETS chinstrap DESTINATION bin)
+
+# The example plugin shared library -> /usr/lib/chinstrap/plugins/
+install(TARGETS chinstrap_example_plugin
+    LIBRARY DESTINATION lib/chinstrap/plugins
+)
+
+# Public headers -> /usr/include/chinstrap/
+install(DIRECTORY include/chinstrap/ DESTINATION include/chinstrap)
+
+# Desktop entry file -> /usr/share/applications/
+install(FILES cmake/debian/chinstrap.desktop
+    DESTINATION share/applications
+)
+
+# Application icon -> /usr/share/icons/hicolor/scalable/apps/
+install(FILES assets/icon.svg
+    DESTINATION share/icons/hicolor/scalable/apps
+    RENAME chinstrap.svg
+)
+
+# Documentation -> /usr/share/doc/chinstrap/
 install(DIRECTORY docs/ DESTINATION share/doc/chinstrap)
+
+# -------------------------------------------------------------------------
+# Packaging (CPack)
+# -------------------------------------------------------------------------
+# TEACHING NOTE: Including packaging.cmake here pulls in all the CPack
+# variables we defined in cmake/packaging.cmake. After this include,
+# running "make package" will produce .deb and .tar.gz packages.
+# -------------------------------------------------------------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/packaging.cmake)
 
 # -------------------------------------------------------------------------
 # Status output

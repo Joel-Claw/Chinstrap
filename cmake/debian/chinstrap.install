@@ -1,0 +1,28 @@
+# =========================================================================
+# Debian install file mapping
+# =========================================================================
+# TEACHING NOTE: The .install file tells debhelper which built files go
+# where in the package. Each line is: "source -> destination"
+#
+# The left side is a path relative to the build directory (or a glob).
+# The right side is a path relative to the package root (which becomes /).
+#
+# This file is used by "dh_install" during the Debian packaging process.
+# It is an alternative to using CMake install rules - you can use either
+# approach, but having both lets the package work whether built via
+# CPack or via dpkg-buildpackage directly.
+#
+# Lines starting with # are comments (like this one).
+# =========================================================================
+
+# The compiled binary goes to /usr/bin/chinstrap
+build/chinstrap usr/bin
+
+# The desktop entry file goes to the applications directory
+cmake/debian/chinstrap.desktop usr/share/applications
+
+# The scalable icon goes to the icon theme directory
+assets/icon.svg usr/share/icons/hicolor/scalable/apps/chinstrap.svg
+
+# All public headers go to the system include directory
+include/chinstrap usr/include

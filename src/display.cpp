@@ -1,9 +1,10 @@
 // display.cpp - Display abstraction implementation
 //
 // TEACHING NOTE: This file implements the display abstraction for Chinstrap.
-// It supports two backends:
+// It supports three backends:
 //   1. Linux framebuffer (/dev/fb0) - direct pixel access via mmap
 //   2. X11 protocol over socket - windowed mode via raw X11
+//   3. Wayland protocol over socket - windowed mode via raw Wayland
 //
 // The framebuffer backend is simpler: we open /dev/fb0, query its geometry
 // with the FBIOGET_VSCREENINFO ioctl, mmap the memory, and write pixels
@@ -16,6 +17,7 @@
 
 #include "display.hpp"
 #include "x11.hpp"
+#include "wayland.hpp"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -60,7 +62,9 @@ Display::Display()
     , m_back_buffer(nullptr)
     , m_back_buffer_owned(false)
     , m_x11_conn(nullptr)
-    , m_x11_window(nullptr) {}
+    , m_x11_window(nullptr)
+    , m_wl_conn(nullptr)
+    , m_wl_surface(nullptr) {}
 
 Display::~Display() {
     shutdown();
@@ -79,8 +83,10 @@ bool Display::init(DisplayBackend backend, int width, int height) {
 
     if (backend == DisplayBackend::FRAMEBUFFER) {
         return init_framebuffer(width, height);
-    } else {
+    } else if (backend == DisplayBackend::X11) {
         return init_x11(width, height);
+    } else {
+        return init_wayland(width, height);
     }
 }
 
@@ -260,6 +266,57 @@ bool Display::init_x11(int width, int height) {
     return true;
 }
 
+// TEACHING NOTE: Wayland initialization
+// =========================================================================
+// In Wayland mode, we connect to the Wayland compositor using our minimal
+// Wayland protocol implementation. The compositor manages the actual
+// framebuffer and composites our surface with other surfaces. We draw to
+// a shared memory buffer and attach it to the surface on flip.
+
+bool Display::init_wayland(int width, int height) {
+    // Create Wayland connection
+    WaylandConnection* conn = new WaylandConnection();
+    if (!conn->connect()) {
+        delete conn;
+        return false;
+    }
+
+    // Determine window dimensions
+    int win_w = (width > 0) ? width : 800;
+    int win_h = (height > 0) ? height : 600;
+
+    // If no explicit size, try to use output dimensions
+    if (width <= 0 && conn->get_output_width() > 0) {
+        win_w = conn->get_output_width();
+        win_h = conn->get_output_height();
+    }
+
+    // Create the surface with shared memory buffer
+    WaylandSurface* surf = new WaylandSurface();
+    if (!surf->create(conn, win_w, win_h)) {
+        delete surf;
+        conn->disconnect();
+        delete conn;
+        return false;
+    }
+
+    m_wl_conn = conn;
+    m_wl_surface = surf;
+    m_width = win_w;
+    m_height = win_h;
+    m_bpp = 4;
+    m_stride = m_width * m_bpp;
+
+    // Use the Wayland shared memory buffer as our back buffer.
+    // The Wayland surface shared memory IS our pixel buffer.
+    // We write to it directly and then call commit_frame() to present.
+    m_back_buffer = surf->get_buffer();
+    m_back_buffer_owned = false;  // owned by WaylandSurface
+
+    m_initialized = true;
+    return true;
+}
+
 // ============================================================================
 // Shutdown
 // ============================================================================
@@ -292,6 +349,20 @@ void Display::shutdown() {
             conn->disconnect();
             delete conn;
             m_x11_conn = nullptr;
+        }
+    } else if (m_backend == DisplayBackend::WAYLAND) {
+        // Wayland surface must be destroyed before the connection
+        if (m_wl_surface) {
+            WaylandSurface* surf = static_cast<WaylandSurface*>(m_wl_surface);
+            surf->destroy();
+            delete surf;
+            m_wl_surface = nullptr;
+        }
+        if (m_wl_conn) {
+            WaylandConnection* conn = static_cast<WaylandConnection*>(m_wl_conn);
+            conn->disconnect();
+            delete conn;
+            m_wl_conn = nullptr;
         }
     }
 
@@ -459,8 +530,10 @@ void Display::flip() {
 
     if (m_backend == DisplayBackend::FRAMEBUFFER) {
         flip_framebuffer();
-    } else {
+    } else if (m_backend == DisplayBackend::X11) {
         flip_x11();
+    } else {
+        flip_wayland();
     }
 }
 
@@ -512,6 +585,46 @@ void Display::flip_x11() {
     win->flush(conn);
 }
 
+// TEACHING NOTE: Wayland flip (buffer commit)
+// =========================================================================
+// In Wayland, flipping means attaching our shared memory buffer to the
+// surface, marking the whole surface as damaged, and committing.
+//
+// Unlike X11 where we copy pixel data to the server, in Wayland the
+// compositor reads directly from our shared memory. We just tell it
+// "this buffer is ready, please show it" via the commit request.
+//
+// After commit, the compositor owns the buffer until it sends
+// wl_buffer::release. We must not write to the buffer while the
+// compositor is using it. In this minimal implementation, we simply
+// mark the buffer as busy and clear the flag when we receive the
+// release event (or on the next frame if we do not get one).
+
+void Display::flip_wayland() {
+    if (!m_wl_conn || !m_wl_surface || !m_back_buffer) return;
+
+    WaylandConnection* conn = static_cast<WaylandConnection*>(m_wl_conn);
+    WaylandSurface* surf = static_cast<WaylandSurface*>(m_wl_surface);
+
+    // If the buffer is still busy from the last frame, skip this flip.
+    // In a proper implementation we would use double buffering (two pools
+    // or one pool split into two buffers) to avoid stalls. For simplicity
+    // we just wait for the compositor to release.
+    if (surf->is_busy()) {
+        // Try to process events to get the release
+        conn->recv_available();
+        conn->process_events();
+        if (surf->is_busy()) {
+            // Still busy - skip this frame. This causes a frame drop but
+            // is better than corrupting the buffer.
+            return;
+        }
+    }
+
+    // Commit the frame: attach buffer, mark damage, commit surface
+    surf->commit_frame(conn);
+}
+
 // ============================================================================
 // Window management
 // ============================================================================
@@ -521,6 +634,9 @@ void Display::set_title(const std::string& title) {
         X11Connection* conn = static_cast<X11Connection*>(m_x11_conn);
         X11Window* win = static_cast<X11Window*>(m_x11_window);
         win->set_title(conn, title);
+    } else if (m_backend == DisplayBackend::WAYLAND && m_wl_surface) {
+        WaylandSurface* surf = static_cast<WaylandSurface*>(m_wl_surface);
+        surf->set_title(title);
     }
     // Framebuffer mode: no title to set
 }
@@ -528,6 +644,8 @@ void Display::set_title(const std::string& title) {
 bool Display::process_events() {
     if (m_backend == DisplayBackend::X11) {
         return process_x11_events();
+    } else if (m_backend == DisplayBackend::WAYLAND) {
+        return process_wayland_events();
     }
     // Framebuffer mode: no events to process (input handled separately)
     return true;
@@ -553,6 +671,38 @@ bool Display::process_x11_events() {
     }
 
     return true;
+}
+
+// TEACHING NOTE: Processing Wayland events
+// =========================================================================
+// In Wayland mode, we need to process events from the compositor. This
+// includes keyboard events, pointer events, and buffer release events.
+// We call the connection to receive and process available data, then
+// check the surface for any pending events.
+//
+// Unlike X11 where we poll for events, in Wayland the compositor pushes
+// events to us. We read available data from the socket and dispatch
+// messages to their target objects.
+
+bool Display::process_wayland_events() {
+    if (!m_wl_conn || !m_wl_surface) return true;
+
+    WaylandConnection* conn = static_cast<WaylandConnection*>(m_wl_conn);
+    WaylandSurface* surf = static_cast<WaylandSurface*>(m_wl_surface);
+
+    // Receive any available data from the compositor
+    conn->recv_available();
+    conn->process_events();
+
+    // Check for surface events (buffer release, etc.)
+    WaylandEvent event;
+    bool valid = surf->process_events(conn, &event);
+
+    // In a full implementation, we would dispatch keyboard/pointer events
+    // to the GUI/input system. For now, we just check if the surface
+    // is still valid.
+
+    return valid;
 }
 
 } // namespace chinstrap

@@ -1,0 +1,56 @@
+# =========================================================================
+# Debian package control file
+# =========================================================================
+# TEACHING NOTE: The control file is the metadata header of a .deb package.
+# When you run "dpkg -I package.deb", this is what gets displayed. It tells
+# the dpkg/apt system:
+#   - What the package is called (Package)
+#   - What it depends on (Depends)
+#   - Who maintains it (Maintainer)
+#   - What architecture it runs on (Architecture)
+#   - A short and long description
+#
+# This file is used by dpkg-deb when building the package. The fields here
+# map directly to CPACK_DEBIAN_* variables in packaging.cmake, but having
+# a standalone control file lets us build .deb packages manually with
+# dpkg-deb if needed (without CMake/CPack).
+#
+# Field reference:
+#   Source       - The source package name (for building from source)
+#   Section      - Category in the Debian archive (web, net, utils, etc.)
+#   Priority     - optional is standard for user-facing apps
+#   Maintainer   - Who is responsible for this package
+#   Build-Depends - Packages needed to compile (not needed in CPack output)
+#   Package      - The binary package name (what users install)
+#   Architecture - any = arch-independent (scripts, docs); or specific arch
+#   Depends      - Runtime dependencies (installed automatically by apt)
+#   Description  - First line: short summary. Following lines: long description
+#                 (indented with a space, blank lines use " .")
+# =========================================================================
+
+Source: chinstrap
+Section: web
+Priority: optional
+Maintainer: Chinstrap Project <chinstrap@example.com>
+Build-Depends: cmake, g++, make, libx11-dev
+Standards-Version: 4.6.0
+Homepage: https://github.com/chinstrap/chinstrap
+
+Package: chinstrap
+Architecture: any
+Depends: libx11-6, ${shlibs:Depends}
+Description: A from-scratch web browser with zero third-party libraries
+ Chinstrap is a web browser written entirely in C++17 with no external
+ dependencies. It implements its own HTML parser, CSS engine, JavaScript
+ interpreter, TLS stack, HTTP client, and rendering pipeline from scratch.
+ .
+ Features:
+  * HTML5 parsing
+  * CSS3 parsing and layout
+  * JavaScript ES6 interpreter
+  * TLS 1.2/1.3 encryption
+  * HTTP/1.1 and HTTP/2 support
+  * DNS resolution
+  * Cookie management
+  * Disk cache
+  * X11 display backend

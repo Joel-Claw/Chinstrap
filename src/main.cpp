@@ -35,6 +35,8 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "url.hpp"
 #include "http.hpp"
@@ -43,6 +45,7 @@
 #include "layout.hpp"
 #include "renderer.hpp"
 #include "config.hpp"
+#include "display.hpp"
 
 // =========================================================================
 // print_usage - Show command line usage
@@ -72,6 +75,7 @@ static void print_usage(const char* program_name) {
 struct CommandLineArgs {
     std::string url;
     std::string config_path = "chinstrap.json";
+    std::string screenshot_path;  // --screenshot FILE
     bool show_help = false;
     bool show_version = false;
 };
@@ -103,6 +107,12 @@ static CommandLineArgs parse_args(int argc, char* argv[]) {
             }
         } else if (arg.substr(0, 9) == "--config=") {
             args.config_path = arg.substr(9);
+        } else if (arg == "--screenshot") {
+            if (i + 1 < argc) {
+                args.screenshot_path = argv[++i];
+            }
+        } else if (arg.substr(0, 13) == "--screenshot=") {
+            args.screenshot_path = arg.substr(13);
         } else if (!arg.empty() && arg[0] != '-') {
             // URL argument
             if (args.url.empty()) {
@@ -144,6 +154,46 @@ static std::string extract_embedded_css(const chinstrap::Node& root) {
     }
 
     return css;
+}
+
+// =========================================================================
+// detect_display_backend - Auto-detect the best available display backend
+// =========================================================================
+// TEACHING NOTE: Display backend auto-detection
+// On a modern Linux system, multiple display systems may be available.
+// We try them in order of preference:
+//   1. Wayland - if WAYLAND_DISPLAY is set and the socket is reachable
+//   2. X11 - if DISPLAY is set and the X server is reachable
+//   3. Framebuffer - if /dev/fb0 exists (kiosk/embedded/headless mode)
+// This allows Chinstrap to work in any environment without manual config.
+
+static chinstrap::DisplayBackend detect_display_backend() {
+    // Check for Wayland: WAYLAND_DISPLAY env var must be set
+    const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
+    const char* xdg_runtime = std::getenv("XDG_RUNTIME_DIR");
+    if (wayland_display && xdg_runtime) {
+        // Try to see if the Wayland socket exists
+        std::string path;
+        if (wayland_display[0] == '/') {
+            path = wayland_display;
+        } else {
+            path = std::string(xdg_runtime) + "/" + wayland_display;
+        }
+        // Check if the socket file exists
+        struct stat st;
+        if (::stat(path.c_str(), &st) == 0 && (st.st_mode & S_IFSOCK)) {
+            return chinstrap::DisplayBackend::WAYLAND;
+        }
+    }
+
+    // Check for X11: DISPLAY env var must be set
+    const char* display = std::getenv("DISPLAY");
+    if (display && display[0] != '\0') {
+        return chinstrap::DisplayBackend::X11;
+    }
+
+    // Fall back to framebuffer
+    return chinstrap::DisplayBackend::FRAMEBUFFER;
 }
 
 // =========================================================================
@@ -220,7 +270,9 @@ int main(int argc, char* argv[]) {
     chinstrap::HttpResponse response;
 
     try {
-        response = client.get(url.host(), url.port(), url.path());
+        // Use send() with redirect following (get() does not follow redirects)
+        chinstrap::HttpRequest req; req.host = url.host(); req.port = url.port(); req.path = url.path();
+        response = client.send(req, 5);
     } catch (const std::exception& e) {
         std::cerr << "Error: HTTP request failed: " << e.what() << std::endl;
         return 1;
@@ -286,8 +338,38 @@ int main(int argc, char* argv[]) {
     // TEACHING NOTE: The final step is rendering. We draw the layout
     // tree to the Linux framebuffer. If the framebuffer is not available,
     // we output a text representation to stdout.
+    // Detect the best available display backend
+    // TEACHING NOTE: We try Wayland first, then X11, then framebuffer.
+    // This lets Chinstrap work in any desktop environment automatically.
+    chinstrap::DisplayBackend backend = detect_display_backend();
+    std::cout << "  Display backend: ";
+    switch (backend) {
+        case chinstrap::DisplayBackend::WAYLAND:
+            std::cout << "Wayland";
+            break;
+        case chinstrap::DisplayBackend::X11:
+            std::cout << "X11";
+            break;
+        case chinstrap::DisplayBackend::FRAMEBUFFER:
+            std::cout << "Framebuffer";
+            break;
+    }
+    std::cout << std::endl;
+
     std::cout << "[6/6] Rendering..." << std::endl;
     chinstrap::Renderer renderer;
+
+    // Screenshot mode: render to PPM file and exit (no display needed)
+    // TEACHING NOTE: This is useful for headless screenshots and CI.
+    // We render the full layout tree to an off-screen buffer and save
+    // it as a PPM image file, which can be converted to PNG.
+    if (!args.screenshot_path.empty()) {
+        std::cout << "  Saving screenshot to " << args.screenshot_path
+                  << "..." << std::endl;
+        renderer.render_to_ppm(*root_box, args.screenshot_path,
+                                config.viewport_width, config.viewport_height);
+        return 0;
+    }
 
     if (renderer.init()) {
         std::cout << "  Framebuffer: " << renderer.info().width << "x"

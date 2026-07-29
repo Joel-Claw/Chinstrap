@@ -1,0 +1,154 @@
+# =========================================================================
+# Release CI Workflow
+# =========================================================================
+# TEACHING NOTE: This workflow runs when a version tag (v*) is pushed.
+# It builds the project on both Debian and Arch, then creates a GitHub
+# Release with downloadable package assets (.deb and .pkg.tar.zst).
+#
+# The flow is:
+#   1. Tag pushed (e.g., "git tag v0.1.0 && git push --tags")
+#   2. This workflow triggers
+#   3. Build jobs run in parallel for each distro
+#   4. Packages are uploaded as release assets
+#
+# The .deb is built via CPack on Ubuntu.
+# The .pkg.tar.zst is built via makepkg on Arch.
+# Both are attached to the same GitHub Release.
+# =========================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# -------------------------------------------------------------------------
+# Permissions: We need write access to create releases and upload assets.
+# -------------------------------------------------------------------------
+permissions:
+  contents: write
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Build .deb package on Ubuntu
+  # -------------------------------------------------------------------------
+  build-deb:
+    name: Build .deb (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make libx11-dev
+
+      - name: Configure and Build
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j"$(nproc)"
+
+      # TEACHING NOTE: "make package" runs CPack, which reads the
+      # packaging.cmake file and produces .deb and .tar.gz packages.
+      # The output goes to the build directory.
+      - name: Create packages
+        run: |
+          cd build
+          make package
+
+      # Upload the .deb as a build artifact for the release job to pick up.
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: build/*.deb
+
+  # -------------------------------------------------------------------------
+  # Build .pkg.tar.zst package on Arch
+  # -------------------------------------------------------------------------
+  build-arch:
+    name: Build .pkg.tar.zst (Arch)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm cmake gcc make libx11
+
+      - name: Configure and Build
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j"$(nproc)"
+
+      # TEACHING NOTE: On Arch, we could use makepkg with the PKGBUILD,
+      # but in CI it is simpler to use CPack. The TGZ generator produces
+      # a tarball that Arch users can extract. For a true .pkg.tar.zst,
+      # you would copy the PKGBUILD into a clean dir and run makepkg.
+      # We produce the CPack TGZ here for simplicity.
+      - name: Create packages
+        run: |
+          cd build
+          make package
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: build/*.tar.gz
+
+  # -------------------------------------------------------------------------
+  # Create GitHub Release with all artifacts
+  # -------------------------------------------------------------------------
+  release:
+    name: Create Release
+    needs: [build-deb, build-arch]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # Download both artifacts from the build jobs
+      - name: Download .deb
+        uses: actions/download-artifact@v4
+        with:
+          name: deb-package
+          path: release-assets/
+
+      - name: Download Arch tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-package
+          path: release-assets/
+
+      # TEACHING NOTE: softprops/action-gh-release is a popular action
+      # for creating GitHub Releases. It takes a tag name (from the
+      # pushed tag) and attaches files from a directory. The "draft"
+      # flag lets you review the release before publishing.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          tag_name: ${{ github.ref_name }}
+          name: Chinstrap ${{ github.ref_name }}
+          body: |
+            ## Chinstrap ${{ github.ref_name }}
+
+            A from-scratch web browser with zero third-party libraries.
+
+            ### Downloads
+            - **Debian/Ubuntu**: Download the `.deb` file and install with `dpkg -i chinstrap-*.deb`
+            - **Arch Linux**: Download the `.tar.gz` file and extract, or use the PKGBUILD from the repository with `makepkg -si`
+          files: |
+            release-assets/*.deb
+            release-assets/*.tar.gz

@@ -1,0 +1,54 @@
+#!/usr/bin/make -f
+# =========================================================================
+# Debian build rules
+# =========================================================================
+# TEACHING NOTE: The rules file is the Debian equivalent of a Makefile
+# for building the .deb package. It is invoked by "dpkg-buildpackage" or
+# "debuild" and must implement several standard targets:
+#
+#   clean     - Remove build artifacts
+#   build     - Compile the project (called "build" for historical reasons)
+#   install   - Install into debian/chinstrap/ (the staging directory)
+#   binary    - Create the final .deb from the staged files
+#
+# The variable DESTDIR points to the staging directory. When we run
+# "make DESTDIR=debian/chinstrap install", CMake installs the binary,
+# headers, desktop file, and icon into the staging tree.
+#
+# This file must be executable. CPack handles this automatically, but
+# when building manually with dpkg-buildpackage, you need: chmod +x rules.
+# =========================================================================
+
+# The name of the binary package (must match the Package field in control)
+PACKAGE = chinstrap
+
+# The staging directory where install targets place files
+DESTDIR = debian/$(PACKAGE)
+
+# Default target - builds and packages
+%:
+	dh $@
+
+# -------------------------------------------------------------------------
+# override_dh_auto_configure - Tell debhelper to use CMake
+# -------------------------------------------------------------------------
+# TEACHING NOTE: debhelper (dh) is Debian's build helper framework. By
+# default it tries autotools (./configure). We override auto-configure
+# to pass CMake flags instead.
+# -------------------------------------------------------------------------
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr
+
+# -------------------------------------------------------------------------
+# override_dh_auto_install - Custom install step
+# -------------------------------------------------------------------------
+# After dh_auto_install runs "make install", we add any extra files that
+# CMake does not handle (like the LICENSE). This keeps packaging logic in
+# one place.
+# -------------------------------------------------------------------------
+override_dh_auto_install:
+	dh_auto_install
+	# Install the LICENSE to the Debian-standard location
+	install -Dm644 LICENSE $(DESTDIR)/usr/share/licenses/$(PACKAGE)/LICENSE

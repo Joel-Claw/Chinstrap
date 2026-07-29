@@ -166,10 +166,21 @@ Stylesheet CssParser::parse_stylesheet() {
     // TEACHING NOTE: A stylesheet is a list of rules. We parse rules
     // until we reach the end of the input. We also skip @-rules
     // (like @media, @import) that we do not support.
+    //
+    // Safety limit: we cap iterations to prevent infinite loops on
+    // malformed or very complex CSS (e.g., Google home page has 80KB
+    // of styles). Real browsers have similar safety limits.
     Stylesheet sheet;
     skip_whitespace_and_comments();
 
+    int iterations = 0;
+    const int MAX_ITERATIONS = 5000;
+
     while (!at_end()) {
+        if (++iterations > MAX_ITERATIONS) {
+            break;
+        }
+
         // Skip @-rules (at-rules)
         // TEACHING NOTE: @-rules like @media, @import, @keyframes are
         // CSS features we do not support. We skip them by finding the
@@ -200,9 +211,15 @@ Stylesheet CssParser::parse_stylesheet() {
         skip_whitespace_and_comments();
         if (at_end()) break;
 
+        std::size_t rule_start = pos_;
         StyleRule rule = parse_rule();
         sheet.rules.push_back(std::move(rule));
 
+        // Progress check: if parse_rule did not advance position,
+        // skip one char to avoid infinite loops on unparseable input
+        if (pos_ == rule_start) {
+            pos_++;
+        }
         skip_whitespace_and_comments();
     }
 
@@ -306,6 +323,20 @@ SimpleSelector CssParser::parse_simple_selector() {
             pos_++;
             if (peek() == ':') pos_++;  // pseudo-element (::)
             parse_identifier();  // skip the pseudo-class name
+            // Handle functional pseudo-classes like :not(...), :nth-child(...)
+            // TEACHING NOTE: Some pseudo-classes take arguments in
+            // parentheses, e.g., :not(.foo), :nth-child(2n+1). We need
+            // to skip the entire parenthesized expression to avoid
+            // getting stuck on the opening parenthesis.
+            if (!at_end() && peek() == '(') {
+                pos_++;  // skip opening paren
+                int paren_depth = 1;
+                while (!at_end() && paren_depth > 0) {
+                    if (peek() == '(') paren_depth++;
+                    else if (peek() == ')') paren_depth--;
+                    pos_++;
+                }
+            }
         } else {
             break;
         }

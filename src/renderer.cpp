@@ -26,6 +26,8 @@
 #include <linux/fb.h>
 #include <cstring>
 #include <cmath>
+#include <fstream>
+#include <vector>
 #include <sstream>
 #include <iostream>
 #include <algorithm>
@@ -519,6 +521,73 @@ void Renderer::render_to_stdout(const Box& root) {
     };
 
     print_box(root, 0);
+}
+
+// =========================================================================
+// render_to_ppm - Render to a PPM screenshot file
+// =========================================================================
+// TEACHING NOTE: PPM (Portable PixMap) is the simplest possible image
+// format. The file is:
+//   P6\n            (magic number for binary PPM)
+//   W H\n          (width and height in ASCII)
+//   255\n          (max color value)
+//   <raw RGB bytes> (W * H * 3 bytes)
+//
+// We render to an off-screen buffer, then write it as PPM. This lets us
+// take screenshots without any image encoding library. Convert to PNG
+// with: convert screenshot.ppm screenshot.png
+// =========================================================================
+
+void Renderer::render_to_ppm(const Box& root, const std::string& filename,
+                               int width, int height) {
+    // Create an off-screen RGB buffer
+    std::vector<uint8_t> buffer(width * height * 3, 255);  // White background
+
+    // Save the current framebuffer state
+    bool was_initialized = initialized_;
+    uint8_t* saved_fb = fb_mem_;
+    FramebufferInfo saved_info = fb_info_;
+
+    // Set up a virtual framebuffer in the buffer
+    // We fake the framebuffer to point at our buffer
+    fb_mem_ = buffer.data();
+    fb_info_.width = width;
+    fb_info_.height = height;
+    fb_info_.bits_per_pixel = 24;
+    fb_info_.bytes_per_pixel = 3;
+    fb_info_.line_length = width * 3;
+    fb_info_.red_pos = 0;
+    fb_info_.green_pos = 8;
+    fb_info_.blue_pos = 16;
+    fb_info_.alpha_pos = 24;
+    initialized_ = true;
+
+    // Render the box tree to our virtual framebuffer
+    render(root);
+
+    // Write PPM file
+    std::ofstream out(filename, std::ios::binary);
+    if (!out) {
+        std::cerr << "Error: Cannot write " << filename << std::endl;
+        // Restore state
+        fb_mem_ = saved_fb;
+        fb_info_ = saved_info;
+        initialized_ = was_initialized;
+        return;
+    }
+
+    out << "P6\n" << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(buffer.data()),
+              static_cast<std::streamsize>(buffer.size()));
+    out.close();
+
+    std::cout << "Screenshot saved: " << filename << " (" << width
+              << "x" << height << ")" << std::endl;
+
+    // Restore state
+    fb_mem_ = saved_fb;
+    fb_info_ = saved_info;
+    initialized_ = was_initialized;
 }
 
 } // namespace chinstrap

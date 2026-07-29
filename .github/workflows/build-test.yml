@@ -1,0 +1,145 @@
+# =========================================================================
+# Build and Test CI Workflow
+# =========================================================================
+# TEACHING NOTE: GitHub Actions workflows are YAML files that define
+# automated tasks. This file runs on every push and pull request to make
+# sure the code compiles and all tests pass.
+#
+# The "matrix" strategy runs the same job in parallel across multiple
+# environments. We test on two Linux distributions:
+#   - ubuntu-latest (Debian-based, uses apt)
+#   - archlinux:latest (Arch-based, uses pacman)
+#
+# This catches distro-specific issues early. For example, different
+# versions of gcc, different default library paths, or different
+# X11 development headers.
+#
+# The workflow has three steps per matrix entry:
+#   1. checkout - Get the source code
+#   2. Install dependencies - Install build tools (cmake, gcc, X11 headers)
+#   3. Build - Run cmake and make
+#   4. Test - Run ctest to execute all unit tests
+# =========================================================================
+
+name: Build and Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# -------------------------------------------------------------------------
+# Permissions: minimal. We only need read access for checkout.
+# -------------------------------------------------------------------------
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test (${{ matrix.distro }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu entry - uses the GitHub-hosted runner directly.
+          # Ubuntu is Debian-based, so it tests the .deb path.
+          - distro: ubuntu
+            runner: ubuntu-latest
+            container: null
+          # Arch entry - runs inside an Arch Linux Docker container.
+          # We use a container because GitHub does not offer Arch runners.
+          # The container image "archlinux:latest" is the official Arch
+          # image from Docker Hub.
+          - distro: arch
+            runner: ubuntu-latest
+            container: archlinux:latest
+
+    steps:
+      # -------------------------------------------------------------------------
+      # Step 1: Checkout source code
+      # -------------------------------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------------
+      # Step 2: Install build dependencies
+      # -------------------------------------------------------------------------
+      # TEACHING NOTE: Each distro has its own package manager and package
+      # names. We use a conditional to run the right install command.
+      #   Ubuntu: apt-get (Debian family)
+      #   Arch:   pacman (Arch family)
+      #
+      # The X11 development headers are needed because Chinstrap links
+      # against X11 for its display backend. On Ubuntu the package is
+      # "libx11-dev"; on Arch it is "libx11" (development headers are
+      # included by default on Arch).
+      # -------------------------------------------------------------------------
+      - name: Install dependencies (Ubuntu)
+        if: matrix.distro == 'ubuntu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ make libx11-dev
+
+      - name: Install dependencies (Arch)
+        if: matrix.distro == 'arch'
+        run: |
+          # Arch containers start minimal. We need basic build tools.
+          # pacman is the Arch package manager. -Syu syncs and updates,
+          # --noconfirm skips interactive prompts (required in CI).
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm cmake gcc make libx11
+
+      # -------------------------------------------------------------------------
+      # Step 3: Configure with CMake
+      # -------------------------------------------------------------------------
+      - name: Configure
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Debug
+
+      # -------------------------------------------------------------------------
+      # Step 4: Build
+      # -------------------------------------------------------------------------
+      - name: Build
+        run: |
+          cd build
+          make -j"$(nproc)"
+
+      # -------------------------------------------------------------------------
+      # Step 5: Run tests
+      # -------------------------------------------------------------------------
+      # TEACHING NOTE: ctest is CMake's test runner. "--output-on-failure"
+      # prints the full output of any test that fails, which is essential
+      # for debugging CI failures. Without this flag, ctest only shows
+      # pass/fail status with no detail.
+      # -------------------------------------------------------------------------
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure
+
+      # -------------------------------------------------------------------------
+      # Step 6: Upload test results
+      # -------------------------------------------------------------------------
+      # TEACHING NOTE: ctest can produce JUnit-style XML test reports,
+      # which GitHub Actions can display in the PR UI. We enable this with
+      # the "Test Reporter" action from the marketplace.
+      # -------------------------------------------------------------------------
+      - name: Generate test report
+        if: always()
+        run: |
+          cd build
+          ctest --output-on-failure --output-junit ../test-results.xml || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.distro }}
+          path: test-results.xml
+          if-no-files-found: ignore

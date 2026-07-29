@@ -1,0 +1,38 @@
+# =========================================================================
+# Desktop entry file for Chinstrap
+# =========================================================================
+# TEACHING NOTE: A .desktop file tells Linux desktop environments (GNOME,
+# KDE, XFCE, etc.) how to display and launch an application. Without this
+# file, the browser would not appear in application menus or the app grid.
+#
+# Key fields:
+#   [Desktop Entry]     - Required header, always exactly this string
+#   Type=Application    - This is a GUI application (not a link or directory)
+#   Name                - Display name shown in menus
+#   Comment             - Tooltip / description shown on hover
+#   Exec                - Command to run (path to binary + args)
+#   Icon                - Icon name (without extension, found in standard dirs)
+#   Terminal=false      - Do not run in a terminal window
+#   Categories          - Menu categories (semicolon-separated)
+#   MimeType            - URL schemes this app can handle
+#   StartupNotify=true  - Show a splash/bounce while launching
+#   StartupWMClass      - Window class for window manager grouping
+#
+# The Icon field uses just the base name "chinstrap". The desktop
+# environment searches standard icon paths
+# (/usr/share/icons/hicolor/scalable/apps/) and appends the right
+# extension (.svg, .png) based on what is available.
+# =========================================================================
+
+[Desktop Entry]
+Type=Application
+Name=Chinstrap
+GenericName=Web Browser
+Comment=A from-scratch web browser with zero third-party libraries
+Exec=chinstrap %u
+Icon=chinstrap
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;application/xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=chinstrap

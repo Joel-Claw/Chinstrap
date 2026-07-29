@@ -1,0 +1,81 @@
+# =========================================================================
+# PKGBUILD - Arch Linux package recipe
+# =========================================================================
+# TEACHING NOTE: A PKGBUILD is to Arch Linux what a Debian control + rules
+# file is to Debian. It is a shell script that tells makepkg (Arch's
+# package builder) how to fetch sources, compile them, and what files to
+# include in the final .pkg.tar.zst package.
+#
+# The flow on an Arch system:
+#   1. Place this PKGBUILD in an empty directory
+#   2. Run: makepkg -si
+#   3. makepkg downloads sources, builds, installs the package
+#
+# Key variables (all uppercase, required by makepkg):
+#   pkgname    - package name (lowercase, no spaces)
+#   pkgver     - version number (no hyphens)
+#   pkgrel     - release number (increment if you repackage same version)
+#   arch       - architectures this package supports
+#   depends    - runtime dependencies (other Arch packages)
+#   makedepends - build-time dependencies
+#
+# Key functions:
+#   prepare()  - pre-build steps (patches, etc.)
+#   build()    - compile the project
+#   package()  - install files into $pkgdir (the staging area)
+# =========================================================================
+
+pkgname="chinstrap"
+pkgver="0.1.0"
+pkgrel=1
+pkgdesc="A from-scratch web browser with zero third-party libraries"
+arch=('x86_64' 'aarch64')
+url="https://github.com/chinstrap/chinstrap"
+license=('MIT')
+depends=('libx11' 'gcc-libs')
+makedepends=('cmake' 'make' 'gcc')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/chinstrap/chinstrap/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+# -------------------------------------------------------------------------
+# prepare() - Called before build(). Used for patching or cleanup.
+# We do not need any preparation steps, so we skip this function.
+# -------------------------------------------------------------------------
+
+# -------------------------------------------------------------------------
+# build() - Compile the project.
+# TEACHING NOTE: The standard CMake build flow is:
+#   1. mkdir build && cd build    (out-of-source build keeps source clean)
+#   2. cmake ..                    (configure: read CMakeLists.txt, generate Makefiles)
+#   3. make -j$(nproc)             (compile: run make with all CPU cores)
+# -------------------------------------------------------------------------
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    mkdir -p build
+    cd build
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    make -j"$(nproc)"
+}
+
+# -------------------------------------------------------------------------
+# package() - Install files into $pkgdir.
+# TEACHING NOTE: $pkgdir is a staging directory that becomes the root of
+# the package. Everything placed here ends up in the .pkg.tar.zst. The
+# standard CMake install flow is:
+#   make DESTDIR=$pkgdir install
+# which installs the binary, headers, desktop file, and icon into the
+# appropriate subdirectories of $pkgdir.
+#
+# After make install, we add the LICENSE file manually (CMake does not
+# install it by default) and clean up any unnecessary files.
+# -------------------------------------------------------------------------
+package() {
+    cd "$srcdir/$pkgname-$pkgver/build"
+    make DESTDIR="$pkgdir" install
+
+    # Install the LICENSE file to the standard Arch location
+    install -Dm644 "$srcdir/$pkgname-$pkgver/LICENSE" \
+        "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
