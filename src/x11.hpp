@@ -221,6 +221,16 @@ public:
     // Set the window title (WM_NAME property)
     void set_title(X11Connection* conn, const std::string& title);
 
+    // Set WM_CLASS property (helps window manager identify the app)
+    void set_wm_class(X11Connection* conn, const std::string& instance_name,
+                      const std::string& class_name);
+
+    // Set WM_NORMAL_HINTS (minimum/maximum size hints for the WM)
+    void set_wm_normal_hints(X11Connection* conn, int min_w, int min_h);
+
+    // Set WM_PROTOCOLS (request WM_DELETE_WINDOW close notification)
+    void set_wm_protocols(X11Connection* conn);
+
     // Copy pixel data to the window (PutImage request)
     // data is in 32-bit BGRA format, stride in bytes
     void put_image(X11Connection* conn, uint8_t* data, int w, int h, int stride);
@@ -252,6 +262,9 @@ private:
 
     // Helper: send CreatePixmap request
     void send_create_pixmap(X11Connection* conn, int w, int h);
+
+    // Helper: intern an atom by name (returns atom ID, 0 on failure)
+    uint32_t intern_atom(X11Connection* conn, const std::string& name);
 
     // Helper: parse an X11 event from raw bytes
     bool parse_event(const uint8_t* data, size_t len, X11Event* event);

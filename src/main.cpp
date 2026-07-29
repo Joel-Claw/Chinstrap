@@ -538,14 +538,31 @@ int main(int argc, char* argv[]) {
 
     // Event loop: poll for events, redraw on expose, exit on close/Ctrl+C.
     // TEACHING NOTE: In a real browser, the event loop handles keyboard,
-    // mouse, timer, network, and IPC events. Here we just poll the display
-    // for events and exit when the window is closed or Ctrl+C is pressed.
+    // mouse, timer, network, and IPC events. Here we use poll() on the
+    // display file descriptor to wait for events efficiently without
+    // busy-looping. This is better than usleep because it responds
+    // immediately to events instead of waiting up to 100ms.
     ::signal(SIGINT, [](int) { ::exit(0); });
 
     bool running = true;
     while (running) {
-        // Sleep briefly to avoid consuming 100% CPU
-        ::usleep(100000);  // 100ms
+        // Use poll() on the display fd to wait for events efficiently.
+        // In X11 mode, events arrive on the X11 socket.
+        // In Wayland mode, events arrive on the Wayland socket.
+        // In framebuffer mode, there is no fd to poll, so we use a timeout.
+        struct pollfd pfd;
+        pfd.fd = display.get_fd();
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        int timeout_ms = 200;  // 200ms timeout for periodic tasks
+        if (pfd.fd < 0) {
+            // No fd (framebuffer mode) - just sleep
+            ::usleep(200000);
+        } else {
+            // Poll the display fd for events
+            ::poll(&pfd, 1, timeout_ms);
+        }
 
         // Process display events
         if (!display.process_events()) {

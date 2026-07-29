@@ -749,10 +749,14 @@ bool X11Window::create(X11Connection* conn, int width, int height, const std::st
     // Set window title (WM_NAME property)
     set_title(conn, title);
 
-    // Set WM_PROTOCOLS to get close-window notification
-    // We need to intern WM_PROTOCOLS and WM_DELETE_WINDOW atoms
-    // For simplicity, we skip this in the minimal implementation and
-    // handle the window close via other means.
+    // Set WM_CLASS property so the window manager recognizes us
+    set_wm_class(conn, "chinstrap", "Chinstrap");
+
+    // Set WM_NORMAL_HINTS so the WM knows our minimum size
+    set_wm_normal_hints(conn, 100, 100);
+
+    // Set WM_PROTOCOLS to get WM_DELETE_WINDOW close notification
+    set_wm_protocols(conn);
 
     // Select input events
     // We want: Exposure, KeyPress, KeyRelease, ButtonPress, ButtonRelease, Motion
@@ -767,19 +771,6 @@ bool X11Window::create(X11Connection* conn, int width, int height, const std::st
 
     // ChangeWindowAttributes request to set event mask
     {
-        uint8_t req[12] = {0};
-        // opcode 2 = ChangeWindowAttributes
-        // This is a special case - we need to build it manually
-        uint16_t req_len = 12 / 4;  // 3 longwords
-        req[0] = X_ChangeWindowAttributes;
-        req[1] = 0;
-        put_u16(&req[2], req_len);
-        put_u32(&req[4], m_window_id);
-        put_u32(&req[8], X11_CW_EventMask);
-        // value: event_mask follows in the same buffer
-        // But we need more space. Let us use the send_request approach.
-
-        // Actually, let us just build the full request
         uint8_t full_req[16] = {0};
         full_req[0] = X_ChangeWindowAttributes;
         full_req[1] = 0;
@@ -980,6 +971,186 @@ void X11Window::set_title(X11Connection* conn, const std::string& title) {
     put_u32(&req[16], 8);   // format = 8 bits
     put_u32(&req[20], (uint32_t)title_len);
     memcpy(&req[24], title.c_str(), title_len);
+
+    conn->send(req.data(), req_size);
+}
+
+// TEACHING NOTE: Interning atoms
+// =========================================================================
+// Many X11 protocol requests use atoms (unique integer IDs for strings).
+// Before we can use an atom like WM_PROTOCOLS, we must intern it by
+// sending an InternAtom request with the string name. The server
+// responds with the atom ID (a CARD32). Pre-defined atoms (like WM_NAME=39
+// and STRING=31) do not need to be interned, but custom atoms do.
+//
+// We send InternAtom and wait for the reply. This is a blocking call.
+
+uint32_t X11Window::intern_atom(X11Connection* conn, const std::string& name) {
+    // InternAtom request (opcode 16):
+    //   byte 0: opcode (16)
+    //   byte 1: only_if_exists (0 = create, 1 = only if already exists)
+    //   bytes 2-3: request length
+    //   bytes 4-7: name length (CARD16 in bytes 4-5, padded to 4)
+    //   bytes 8+: name string, padded to 4 bytes
+
+    size_t name_len = name.size();
+    size_t padded_name = pad4(name_len);
+    size_t req_size = 8 + padded_name;
+
+    std::vector<uint8_t> req(req_size, 0);
+    req[0] = X_InternAtom;
+    req[1] = 0;  // only_if_exists = false (create if needed)
+    put_u16(&req[2], (uint16_t)(req_size / 4));
+    put_u16(&req[4], (uint16_t)name_len);
+    // bytes 6-7 are unused (padding)
+    memcpy(&req[8], name.c_str(), name_len);
+
+    conn->send(req.data(), req_size);
+    conn->flush();
+
+    // Read the reply. X11 replies have:
+    //   byte 0: type (1 = reply)
+    //   byte 1: unused
+    //   bytes 2-3: sequence number
+    //   bytes 4-7: length of additional data in 4-byte units
+    //   bytes 8-11: atom (CARD32)
+    //
+    // The server may send events before the reply. Events have byte 0
+    // set to an event type code (2-35) instead of 1. We skip events
+    // until we get the reply.
+    uint8_t reply[32];
+    while (true) {
+        conn->receive(reply, 32);
+        if (reply[0] == 1) break;  // this is the reply
+        // It is an event (reply[0] > 1). Skip it and keep reading.
+        // In a full implementation we would queue it for later processing.
+    }
+
+    uint32_t atom = get_u32(&reply[8]);
+    return atom;
+}
+
+// TEACHING NOTE: Setting WM_CLASS
+// =========================================================================
+// WM_CLASS is a property that helps the window manager identify the
+// application. It contains two null-terminated strings: the instance
+// name and the class name. Without WM_CLASS, some window managers
+// will not show the window or apply any styling.
+
+void X11Window::set_wm_class(X11Connection* conn, const std::string& instance_name,
+                              const std::string& class_name) {
+    // WM_CLASS atom = 67 (pre-defined in the X11 protocol)
+    // The property type is STRING (atom 31)
+    // The format is 8 (bytes)
+    // The data is two consecutive null-terminated strings
+
+    size_t data_len = instance_name.size() + 1 + class_name.size() + 1;
+    size_t padded_data = pad4(data_len);
+    size_t req_size = 24 + padded_data;
+
+    std::vector<uint8_t> req(req_size, 0);
+    req[0] = X_ChangeProperty;
+    req[1] = X11_PropModeReplace;
+    put_u16(&req[2], (uint16_t)(req_size / 4));
+    put_u32(&req[4], m_window_id);
+    put_u32(&req[8], 67);   // WM_CLASS atom (pre-defined)
+    put_u32(&req[12], 31); // STRING atom (pre-defined)
+    put_u32(&req[16], 8);  // format = 8 bits
+    put_u32(&req[20], (uint32_t)data_len);
+    size_t pos = 24;
+    memcpy(&req[pos], instance_name.c_str(), instance_name.size());
+    pos += instance_name.size();
+    req[pos++] = 0;  // null terminator
+    memcpy(&req[pos], class_name.c_str(), class_name.size());
+    pos += class_name.size();
+    req[pos++] = 0;  // null terminator
+
+    conn->send(req.data(), req_size);
+}
+
+// TEACHING NOTE: Setting WM_NORMAL_HINTS
+// =========================================================================
+// WM_NORMAL_HINTS (atom 40, type WM_SIZE_HINTS = 41) tells the window
+// manager the minimum and maximum size, and the resize increments.
+// Without this, some WMs may not show the window or may give it a
+// default size of 1x1. We set a minimum size so the window is visible.
+
+void X11Window::set_wm_normal_hints(X11Connection* conn, int min_w, int min_h) {
+    // WM_SIZE_HINTS is a struct of 18 CARD32 fields:
+    //   flags, pad, pad, pad, min_width, min_height, pad, pad,
+    //   max_width, max_height, pad, pad, width_inc, height_inc, pad, pad,
+    //   min_aspect_x, min_aspect_y, max_aspect_x, max_aspect_y
+    //
+    // flags bits: 0=USPosition, 1=USSize, 2=PPosition, 3=PSize,
+    //            4=PMinSize, 5=PMaxSize, 6=PResizeInc, 7=PAspect
+    // We set PMinSize (bit 4 = 0x10) and PPosition (bit 2 = 0x04)
+
+    uint32_t flags = 0x10 | 0x04;  // PMinSize | PPosition
+    uint32_t data[18] = {0};
+    data[0] = flags;        // flags
+    data[1] = 0;             // x position (not used here)
+    data[2] = 0;             // y position (not used here)
+    data[3] = (uint32_t)m_width;  // base width
+    data[4] = (uint32_t)m_height; // base height
+    data[5] = (uint32_t)min_w;   // min width
+    data[6] = (uint32_t)min_h;   // min height
+    // rest are 0 (no max, no resize inc, no aspect)
+
+    size_t data_len = 18 * 4;  // 72 bytes
+    size_t padded_data = pad4(data_len);
+    size_t req_size = 24 + padded_data;
+
+    std::vector<uint8_t> req(req_size, 0);
+    req[0] = X_ChangeProperty;
+    req[1] = X11_PropModeReplace;
+    put_u16(&req[2], (uint16_t)(req_size / 4));
+    put_u32(&req[4], m_window_id);
+    put_u32(&req[8], 40);  // WM_NORMAL_HINTS atom (pre-defined)
+    put_u32(&req[12], 41); // WM_SIZE_HINTS type (pre-defined)
+    put_u32(&req[16], 32); // format = 32 bits
+    put_u32(&req[20], 18); // number of elements
+
+    for (int i = 0; i < 18; i++) {
+        put_u32(&req[24 + i * 4], data[i]);
+    }
+
+    conn->send(req.data(), req_size);
+}
+
+// TEACHING NOTE: Setting WM_PROTOCOLS
+// =========================================================================
+// WM_PROTOCOLS (atom 40? no, it must be interned) is a property that
+// lists the protocols the client supports. The most important is
+// WM_DELETE_WINDOW: when the user clicks the close button, the WM
+// sends a ClientMessage event with WM_DELETE_WINDOW instead of
+// killing the client outright. Without this, the window close button
+// will kill the app immediately (no clean shutdown).
+
+void X11Window::set_wm_protocols(X11Connection* conn) {
+    // Intern the WM_PROTOCOLS and WM_DELETE_WINDOW atoms
+    uint32_t wm_protocols = intern_atom(conn, "WM_PROTOCOLS");
+    uint32_t wm_delete_window = intern_atom(conn, "WM_DELETE_WINDOW");
+
+    if (wm_protocols == 0 || wm_delete_window == 0) return;
+
+    // Set the WM_PROTOCOLS property on the window
+    // The property contains a list of atoms (CARD32 format)
+    // We list just WM_DELETE_WINDOW
+
+    size_t data_len = 4;  // one CARD32 atom
+    size_t padded_data = pad4(data_len);
+    size_t req_size = 24 + padded_data;
+
+    std::vector<uint8_t> req(req_size, 0);
+    req[0] = X_ChangeProperty;
+    req[1] = X11_PropModeReplace;
+    put_u16(&req[2], (uint16_t)(req_size / 4));
+    put_u32(&req[4], m_window_id);
+    put_u32(&req[8], wm_protocols);       // property atom
+    put_u32(&req[12], 4);                // type = ATOM (pre-defined atom 4)
+    put_u32(&req[16], 32);               // format = 32 bits
+    put_u32(&req[20], 1);                // 1 element
+    put_u32(&req[24], wm_delete_window); // the atom value
 
     conn->send(req.data(), req_size);
 }

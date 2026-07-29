@@ -175,6 +175,10 @@ public:
     // Returns true if the display is still valid, false if window was closed.
     bool process_events();
 
+    // Get the file descriptor for polling (X11/Wayland mode)
+    // Returns -1 in framebuffer mode or if not initialized.
+    int get_fd() const;
+
 private:
     DisplayBackend m_backend;
     bool m_initialized;

@@ -33,6 +33,7 @@
 #include <poll.h>
 #include <errno.h>
 #include <stdexcept>
+#include <iostream>
 
 namespace chinstrap {
 
@@ -162,6 +163,13 @@ bool WaylandConnection::connect() {
     const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
     const char* xdg_runtime = std::getenv("XDG_RUNTIME_DIR");
 
+    if (!wayland_display) {
+        std::cerr << "Wayland: WAYLAND_DISPLAY not set" << std::endl;
+    }
+    if (!xdg_runtime) {
+        std::cerr << "Wayland: XDG_RUNTIME_DIR not set" << std::endl;
+    }
+
     std::string wd = wayland_display ? wayland_display : "wayland-0";
     std::string xdg = xdg_runtime ? xdg_runtime : "/tmp";
 
@@ -173,10 +181,15 @@ bool WaylandConnection::connect() {
         path = xdg + "/" + wd;
     }
 
+    std::cerr << "Wayland: connecting to socket " << path << std::endl;
+
     // Try to open the socket
     if (!open_socket(path)) {
+        std::cerr << "Wayland: failed to open socket " << path << std::endl;
         return false;
     }
+
+    std::cerr << "Wayland: socket connected, sending get_registry" << std::endl;
 
     // TEACHING NOTE: Wayland initial state
     // ====================================================================
@@ -248,9 +261,20 @@ bool WaylandConnection::connect() {
     }
 
     if (!has_globals()) {
+        std::cerr << "Wayland: missing required globals after roundtrip"
+                  << " (compositor=" << m_compositor_id
+                  << " shm=" << m_shm_id
+                  << " xdg_wm_base=" << m_xdg_wm_base_id
+                  << ")" << std::endl;
         disconnect();
         return false;
     }
+
+    std::cerr << "Wayland: connected ok (compositor=" << m_compositor_id
+              << " shm=" << m_shm_id
+              << " seat=" << m_seat_id
+              << " xdg_wm_base=" << m_xdg_wm_base_id
+              << ")" << std::endl;
 
     return true;
 }
@@ -707,12 +731,10 @@ void WaylandConnection::handle_registry_global(uint32_t name,
     // When the compositor advertises a global, we check if it is one we
     // need. If so, we bind to it by allocating a client-side object ID
     // and sending a wl_registry::bind request.
-    //
-    // We need:
-    //   - wl_compositor: to create surfaces
-    //   - wl_shm: to create shared memory buffers
-    //   - wl_seat: to receive keyboard/pointer events
-    //   - wl_output: to get screen dimensions (optional but useful)
+
+    std::cerr << "Wayland: registry global: name=" << name
+              << " interface=" << interface
+              << " version=" << version << std::endl;
 
     if (strcmp(interface, WL_INTERFACE_COMPOSITOR) == 0) {
         m_compositor_id = allocate_id();
@@ -741,12 +763,11 @@ void WaylandConnection::handle_registry_global(uint32_t name,
 void WaylandConnection::handle_display_error(uint32_t object_id,
                                                 uint32_t code,
                                                 const char* message) {
-    // A fatal error from the compositor. In a real application we would
-    // log this and abort. Here we just write to stderr.
-    (void)object_id;
-    (void)code;
-    (void)message;
-    // Do not crash - just note the error
+    // A fatal error from the compositor. Log it so we know why things fail.
+    std::cerr << "Wayland: display error - object=" << object_id
+              << " code=" << code
+              << " msg=" << (message ? message : "(null)")
+              << std::endl;
 }
 
 void WaylandConnection::handle_output_mode(uint32_t flags, int32_t width,
@@ -1061,32 +1082,32 @@ bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
     m_width = width;
     m_height = height;
 
+    std::cerr << "Wayland: creating surface " << width << "x" << height << std::endl;
+
     // Create the surface
     if (!create_surface(conn)) {
+        std::cerr << "Wayland: failed to create surface" << std::endl;
         return false;
     }
 
     // Create the shared memory buffer
     if (!create_shm_buffer(conn)) {
+        std::cerr << "Wayland: failed to create shm buffer" << std::endl;
         return false;
     }
 
     // Create xdg_surface and xdg_toplevel for window management.
-    // This is required for the compositor to show our surface as a toplevel window.
-    // If xdg_wm_base is not available, we skip it and the surface may not be visible.
     if (conn->get_xdg_wm_base_id() != 0) {
         if (!create_xdg_surface(conn)) {
+            std::cerr << "Wayland: failed to create xdg_surface" << std::endl;
             return false;
         }
+    } else {
+        std::cerr << "Wayland: no xdg_wm_base, surface may not be visible" << std::endl;
     }
 
-    // Flush all requests to the compositor
-    // We need to ensure all messages are sent before we try to commit.
-    // In a real implementation, we would use wl_display::flush() or
-    // similar. Here we rely on the socket buffer being flushed by
-    // the kernel.
-
     m_initialized = true;
+    std::cerr << "Wayland: surface created ok" << std::endl;
     return true;
 }
 

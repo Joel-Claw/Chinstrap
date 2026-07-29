@@ -651,6 +651,16 @@ bool Display::process_events() {
     return true;
 }
 
+int Display::get_fd() const {
+    if (!m_initialized) return -1;
+    if (m_backend == DisplayBackend::X11 && m_x11_conn) {
+        return static_cast<X11Connection*>(m_x11_conn)->get_fd();
+    } else if (m_backend == DisplayBackend::WAYLAND && m_wl_conn) {
+        return static_cast<WaylandConnection*>(m_wl_conn)->get_fd();
+    }
+    return -1;
+}
+
 bool Display::process_x11_events() {
     if (!m_x11_conn || !m_x11_window) return true;
 
