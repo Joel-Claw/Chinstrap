@@ -16,9 +16,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <iostream>
 #include <poll.h>
 #include <stdexcept>
 
@@ -355,191 +357,255 @@ bool X11Connection::open_tcp_socket(const std::string& host, int port) {
 //   - depth (color depth of the root screen)
 
 bool X11Connection::do_handshake() {
-    // Send connection setup request
-    // Use little-endian byte order (most common on x86/ARM)
-    uint8_t setup[12] = {0};
-    setup[0] = 0x6C;  // 'l' = little-endian
-    setup[1] = 0x00;
-    put_u16(&setup[2], 11);  // major version
-    put_u16(&setup[4], 0);   // minor version
-    put_u16(&setup[6], 0);   // auth length
-    put_u16(&setup[8], 0);   // unused
+    // TEACHING NOTE: X11 authentication
+    // ====================================================================
+    // The X server requires authentication. The most common method is
+    // MIT-MAGIC-COOKIE-1, which uses a 16-byte cookie stored in the
+    // .Xauthority file. We read the file, find the cookie for our display,
+    // and send it in the setup request.
+    //
+    // The .Xauthority file format (all big-endian):
+    //   CARD16 family
+    //   STRING address (CARD16 len + data)
+    //   For FamilyLocal (256): STRING display (CARD16 len + data)
+    //   For other families: CARD16 display_number
+    //   STRING name (CARD16 len + data)
+    //   STRING data (CARD16 len + data)
 
-    // Actually we need to send in the byte order we specified.
-    // Since we said little-endian, we need to send 16-bit values as LE.
-    // But X11 expects the setup fields in the byte order specified by byte 0.
-    // Let us use big-endian for simplicity.
-    setup[0] = 0x42;  // 'B' = big-endian
-    setup[1] = 0x00;
-    setup[2] = 0; setup[3] = 11;  // major = 11 (big-endian)
-    setup[4] = 0; setup[5] = 0;  // minor = 0
-    setup[6] = 0; setup[7] = 0;  // auth length = 0
-    setup[8] = 0; setup[9] = 0;  // unused
-    setup[10] = 0; setup[11] = 0;
-
-    send(setup, 12);
-
-    // Read server response
-    uint8_t reply[8];
-    receive(reply, 8);
-
-    uint8_t status = reply[0];
-    if (status == 0) {
-        // Failed
-        return false;
-    } else if (status == 2) {
-        // Authenticate - send auth protocol name and data
-        // For simplicity, just send empty (usually works for local connections)
-        uint8_t auth[8] = {0};
-        send(auth, 8);
-        receive(reply, 8);
-        if (reply[0] != 1) return false;
-    } else if (status != 1) {
-        return false;
-    }
-
-    // Success - parse the rest of the setup response
-    // reply[0] = 1 (success)
-    // reply[1] = unused
-    // reply[2..3] = protocol major version (big-endian)
-    // reply[4..5] = protocol minor version
-    // reply[6..7] = length of additional data in 4-byte units
-
-    uint16_t additional_len = get_u16(&reply[6]);
-    size_t additional_bytes = (size_t)additional_len * 4;
-
-    std::vector<uint8_t> data(additional_bytes);
-    if (additional_bytes > 0) {
-        receive(data.data(), additional_bytes);
-    }
-
-    // Parse the additional data
-    // Format (all big-endian since we specified 'B' byte order):
-    //   0:   1 byte: release number (hi)
-    //   1:   1 byte: release number (lo)
-    //   2-3: 2 bytes: resource_id_base
-    //   4-7: 4 bytes: resource_id_mask
-    //   8-9: 2 bytes: motion buffer size
-    //   10-15: 6 bytes: vendor length (2) + maximum request length (4)
-    //   Then: vendor string (padded to 4 bytes)
-    //   Then: pixmap formats
-    //   Then: screens
-
-    size_t pos = 0;
-
-    // release number (2 bytes)
-    // skip 2 bytes
-    pos = 2;
-
-    // resource_id_base (4 bytes, but in the format it is 2+2 due to LE/BE confusion)
-    // Actually the setup response format is:
-    //   uint32_t release_number;  // but with our byte order...
-    // Let us be precise. The X11 spec says the setup response has:
-    //   CARD8 success
-    //   CARD8 unused
-    //   CARD16 protocol-major-version
-    //   CARD16 protocol-minor-version
-    //   CARD16 length-of-additional-data
-    //   Then additional data:
-    //     CARD32 release-number
-    //     CARD32 resource-id-base
-    //     CARD32 resource-id-mask
-    //     CARD32 motion-buffer-size
-    //     CARD16 vendor-length
-    //     CARD16 maximum-request-length
-    //     ...
-
-    // The first 8 bytes we already read are the header.
-    // The additional data starts at offset 0 of our data vector.
-
-    // release_number (4 bytes)
-    uint32_t release = get_u32(&data[pos]);
-    (void)release;
-    pos += 4;
-
-    // resource_id_base (4 bytes)
-    m_resource_id_base = get_u32(&data[pos]);
-    pos += 4;
-
-    // resource_id_mask (4 bytes)
-    m_resource_id_mask = get_u32(&data[pos]);
-    pos += 4;
-
-    // motion_buffer_size (4 bytes)
-    pos += 4;
-
-    // vendor_length (2 bytes)
-    uint16_t vendor_len = get_u16(&data[pos]);
-    pos += 2;
-
-    // maximum_request_length (2 bytes)
-    pos += 2;
-
-    // Skip vendor string (padded to 4 bytes)
-    pos += pad4(vendor_len);
-
-    // pixmap_formats_count (1 byte)
-    uint8_t num_formats = data[pos];
-    pos += 1;
-
-    // Skip 1 byte padding
-    pos += 1;
-
-    // Skip pixmap formats (each is 8 bytes)
-    for (uint8_t i = 0; i < num_formats; ++i) {
-        // depth (1), bits_per_pixel (1), scanline_pad (1), padding (5)
-        if (data[pos] == 24 || data[pos] == 32) {
-            m_depth = data[pos];
+    // Read .Xauthority
+    std::string xauth_path;
+    const char* xauth_env = std::getenv("XAUTHORITY");
+    if (xauth_env) {
+        xauth_path = xauth_env;
+    } else {
+        const char* home = std::getenv("HOME");
+        if (home) {
+            xauth_path = std::string(home) + "/.Xauthority";
         }
-        pos += 8;
-    }
-    if (m_depth == 0) m_depth = 24;
-
-    // Now we have the screen info
-    // Each screen has:
-    //   CARD32 root-window-id
-    //   CARD32 default-colormap-id
-    //   CARD32 white-pixel
-    //   CARD32 black-pixel
-    //   CARD32 current-input-masks
-    //   CARD16 width-in-pixels
-    //   CARD16 height-in-pixels
-    //   CARD16 width-in-millimeters
-    //   CARD16 height-in-millimeters
-    //   CARD16 min-installed-maps
-    //   CARD16 max-installed-maps
-    //   CARD32 root-visual
-    //   CARD8 backing-stores
-    //   CARD8 save-unders
-    //   CARD8 root-depth
-    //   CARD8 number-of-allowed-depths
-    //   Then for each depth: depth, padding, number-of-visuals, padding, visuals...
-
-    m_root_window = get_u32(&data[pos]);
-    pos += 4;
-    pos += 4;  // default colormap
-    pos += 4;  // white pixel
-    pos += 4;  // black pixel
-    pos += 4;  // current input masks
-    pos += 2;  // width
-    pos += 2;  // height
-    pos += 2;  // width mm
-    pos += 2;  // height mm
-    pos += 2;  // min installed maps
-    pos += 2;  // max installed maps
-    m_root_visual = get_u32(&data[pos]);
-    pos += 4;
-    pos += 1;  // backing stores
-    pos += 1;  // save unders
-    pos += 1;  // root depth
-    pos += 1;  // number of allowed depths
-
-    // If depth was not found in pixmap formats, use root depth
-    if (m_depth == 0) {
-        m_depth = 24;
     }
 
-    return true;
+    std::vector<uint8_t> auth_name;
+    std::vector<uint8_t> auth_data;
+    bool have_auth = false;
+
+    if (!xauth_path.empty()) {
+        int fd = ::open(xauth_path.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            std::vector<uint8_t> file_data;
+            uint8_t fbuf[4096];
+            ssize_t n;
+            while ((n = ::read(fd, fbuf, sizeof(fbuf))) > 0) {
+                file_data.insert(file_data.end(), fbuf, fbuf + n);
+            }
+            ::close(fd);
+
+            std::string display_env = std::getenv("DISPLAY") ? std::getenv("DISPLAY") : ":0";
+            int our_display = 0;
+            size_t colon = display_env.find(':');
+            if (colon != std::string::npos) {
+                std::string rest = display_env.substr(colon + 1);
+                size_t dot = rest.find('.');
+                if (dot != std::string::npos) {
+                    our_display = atoi(rest.substr(0, dot).c_str());
+                } else {
+                    our_display = atoi(rest.c_str());
+                }
+            }
+
+            size_t pos = 0;
+            while (pos + 2 <= file_data.size() && !have_auth) {
+                uint16_t family = static_cast<uint16_t>((file_data[pos] << 8) | file_data[pos + 1]);
+                pos += 2;
+
+                if (pos + 2 > file_data.size()) break;
+                uint16_t addr_len = static_cast<uint16_t>((file_data[pos] << 8) | file_data[pos + 1]);
+                pos += 2;
+                if (pos + addr_len > file_data.size()) break;
+                pos += addr_len;
+
+                int rec_display = -1;
+                if (family == 256) {
+                    // FamilyLocal: display is stored as STRING
+                    if (pos + 2 > file_data.size()) break;
+                    uint16_t disp_len = static_cast<uint16_t>((file_data[pos] << 8) | file_data[pos + 1]);
+                    pos += 2;
+                    if (pos + disp_len > file_data.size()) break;
+                    std::string disp_str(file_data.begin() + pos, file_data.begin() + pos + disp_len);
+                    pos += disp_len;
+                    rec_display = atoi(disp_str.c_str());
+                } else {
+                    if (pos + 2 > file_data.size()) break;
+                    rec_display = (file_data[pos] << 8) | file_data[pos + 1];
+                    pos += 2;
+                }
+
+                if (pos + 2 > file_data.size()) break;
+                uint16_t name_len = static_cast<uint16_t>((file_data[pos] << 8) | file_data[pos + 1]);
+                pos += 2;
+                if (pos + name_len > file_data.size()) break;
+                std::vector<uint8_t> rec_name(file_data.begin() + pos, file_data.begin() + pos + name_len);
+                pos += name_len;
+
+                if (pos + 2 > file_data.size()) break;
+                uint16_t data_len = static_cast<uint16_t>((file_data[pos] << 8) | file_data[pos + 1]);
+                pos += 2;
+                if (pos + data_len > file_data.size()) break;
+                std::vector<uint8_t> rec_data(file_data.begin() + pos, file_data.begin() + pos + data_len);
+                pos += data_len;
+
+                if (family == 0 || rec_display == our_display) {
+                    auth_name = rec_name;
+                    auth_data = rec_data;
+                    have_auth = true;
+                }
+            }
+        }
+    }
+
+    // Try with auth first, then without auth (XWayland often needs no auth)
+    for (int auth_attempt = 0; auth_attempt < 2; auth_attempt++) {
+        bool use_auth = (auth_attempt == 0) && have_auth;
+
+        // Reconnect socket for retry (first attempt uses existing socket)
+        if (auth_attempt > 0) {
+            if (m_fd >= 0) {
+                ::close(m_fd);
+                m_fd = -1;
+            }
+            // Reopen the same socket
+            std::string display_env = std::getenv("DISPLAY") ? std::getenv("DISPLAY") : ":0";
+            int disp_num = 0;
+            size_t colon2 = display_env.find(':');
+            if (colon2 != std::string::npos) {
+                std::string rest2 = display_env.substr(colon2 + 1);
+                size_t dot2 = rest2.find('.');
+                if (dot2 != std::string::npos) {
+                    disp_num = atoi(rest2.substr(0, dot2).c_str());
+                } else {
+                    disp_num = atoi(rest2.c_str());
+                }
+            }
+            std::string path = "/tmp/.X11-unix/X" + std::to_string(disp_num);
+            if (!open_unix_socket(path)) {
+                return false;
+            }
+        }
+
+        uint16_t name_len = use_auth ? static_cast<uint16_t>(auth_name.size()) : 0;
+        uint16_t data_len = use_auth ? static_cast<uint16_t>(auth_data.size()) : 0;
+        size_t name_padded = (name_len + 3) & ~static_cast<size_t>(3);
+        size_t data_padded = (data_len + 3) & ~static_cast<size_t>(3);
+        size_t setup_size = 12 + name_padded + data_padded;
+        std::vector<uint8_t> setup(setup_size, 0);
+
+        setup[0] = 0x42;  // 'B' = big-endian
+        setup[1] = 0x00;
+        setup[2] = 0; setup[3] = 11;
+        setup[4] = 0; setup[5] = 0;
+        setup[6] = static_cast<uint8_t>(name_len >> 8);
+        setup[7] = static_cast<uint8_t>(name_len & 0xFF);
+        setup[8] = static_cast<uint8_t>(data_len >> 8);
+        setup[9] = static_cast<uint8_t>(data_len & 0xFF);
+        setup[10] = 0; setup[11] = 0;
+
+        if (use_auth) {
+            std::memcpy(setup.data() + 12, auth_name.data(), auth_name.size());
+            std::memcpy(setup.data() + 12 + name_padded, auth_data.data(), auth_data.size());
+        }
+
+        m_output_buf.clear();
+        send(setup.data(), setup_size);
+        flush();
+
+        uint8_t reply[8];
+        receive(reply, 8);
+
+        uint8_t status = reply[0];
+        if (status == 0) {
+            // Failed - read reason
+            uint8_t reason_len = reply[1];
+            uint16_t extra_units = static_cast<uint16_t>((reply[6] << 8) | reply[7]);
+            size_t extra_bytes = static_cast<size_t>(extra_units) * 4;
+            if (extra_bytes > 0) {
+                std::vector<uint8_t> extra_data(extra_bytes, 0);
+                receive(extra_data.data(), extra_bytes);
+                std::string reason_str(extra_data.begin(), extra_data.begin() + reason_len);
+                std::cerr << "X11 connection failed: " << reason_str << std::endl;
+            }
+            if (use_auth) continue;  // retry without auth
+            return false;
+        } else if (status == 2) {
+            // Authenticate
+            uint8_t auth_reply[8] = {0};
+            send(auth_reply, 8);
+            flush();
+            receive(reply, 8);
+            if (reply[0] != 1) return false;
+        } else if (status != 1) {
+            return false;
+        }
+
+        // Success - parse setup response
+        uint16_t additional_len = get_u16(&reply[6]);
+        size_t additional_bytes = static_cast<size_t>(additional_len) * 4;
+        std::vector<uint8_t> data(additional_bytes);
+        if (additional_bytes > 0) {
+            receive(data.data(), additional_bytes);
+        }
+
+        size_t pos = 0;
+
+        // release_number (4 bytes)
+        uint32_t release = get_u32(&data[pos]);
+        (void)release;
+        pos += 4;
+
+        m_resource_id_base = get_u32(&data[pos]);
+        pos += 4;
+        m_resource_id_mask = get_u32(&data[pos]);
+        pos += 4;
+        pos += 4;  // motion buffer size
+
+        uint16_t vendor_len = get_u16(&data[pos]);
+        pos += 2;
+        pos += 2;  // max request length
+        pos += pad4(vendor_len);  // skip vendor string
+
+        uint8_t num_formats = data[pos];
+        pos += 1;
+        pos += 1;  // padding
+        for (uint8_t i = 0; i < num_formats; ++i) {
+            if (data[pos] == 24 || data[pos] == 32) {
+                m_depth = data[pos];
+            }
+            pos += 8;
+        }
+        if (m_depth == 0) m_depth = 24;
+
+        m_root_window = get_u32(&data[pos]);
+        pos += 4;
+        pos += 4;  // default colormap
+        pos += 4;  // white pixel
+        pos += 4;  // black pixel
+        pos += 4;  // current input masks
+        pos += 2;  // width
+        pos += 2;  // height
+        pos += 2;  // width mm
+        pos += 2;  // height mm
+        pos += 2;  // min installed maps
+        pos += 2;  // max installed maps
+        m_root_visual = get_u32(&data[pos]);
+        pos += 4;
+        pos += 1;  // backing stores
+        pos += 1;  // save unders
+        pos += 1;  // root depth
+        pos += 1;  // number of allowed depths
+
+        if (m_depth == 0) m_depth = 24;
+        return true;
+    }
+
+    return false;
 }
 
 void X11Connection::disconnect() {

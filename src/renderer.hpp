@@ -183,6 +183,12 @@ public:
     // any image encoding library. We can convert PPM to PNG with tools.
     void render_to_ppm(const Box& root, const std::string& filename, int width = 1024, int height = 768);
 
+    // Render to an off-screen RGB pixel buffer (for display backends)
+    // TEACHING NOTE: This renders the full page plus browser UI into a raw
+    // RGB buffer that can be fed to X11 put_image or Wayland shm buffer.
+    // Returns a vector of width * height * 3 bytes (RGB format).
+    std::vector<uint8_t> render_to_buffer(const Box& root, int width, int height);
+
     // Set the URL to display in the browser UI frame (for screenshots)
     void set_screenshot_url(const std::string& url) { screenshot_url_ = url; }
 

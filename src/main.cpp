@@ -35,8 +35,11 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <poll.h>
+#include <vector>
+#include <cstring>
+#include <sys/stat.h>
 
 #include "url.hpp"
 #include "http.hpp"
@@ -46,6 +49,8 @@
 #include "renderer.hpp"
 #include "config.hpp"
 #include "display.hpp"
+#include "x11.hpp"
+#include "wayland.hpp"
 
 // =========================================================================
 // print_usage - Show command line usage
@@ -431,34 +436,17 @@ int main(int argc, char* argv[]) {
     std::cout << "  Root box: " << root_box->width << "x" << root_box->height << std::endl;
 
     // Step 6: Render
-    // TEACHING NOTE: The final step is rendering. We draw the layout
-    // tree to the Linux framebuffer. If the framebuffer is not available,
-    // we output a text representation to stdout.
-    // Detect the best available display backend
+    // TEACHING NOTE: The final step is rendering. We detect the best
+    // available display backend and use it to show the page.
     // TEACHING NOTE: We try Wayland first, then X11, then framebuffer.
     // This lets Chinstrap work in any desktop environment automatically.
+    chinstrap::Renderer renderer;
     chinstrap::DisplayBackend backend = detect_display_backend();
-    std::cout << "  Display backend: ";
-    switch (backend) {
-        case chinstrap::DisplayBackend::WAYLAND:
-            std::cout << "Wayland";
-            break;
-        case chinstrap::DisplayBackend::X11:
-            std::cout << "X11";
-            break;
-        case chinstrap::DisplayBackend::FRAMEBUFFER:
-            std::cout << "Framebuffer";
-            break;
-    }
-    std::cout << std::endl;
 
     std::cout << "[6/6] Rendering..." << std::endl;
-    chinstrap::Renderer renderer;
 
     // Screenshot mode: render to PPM file and exit (no display needed)
     // TEACHING NOTE: This is useful for headless screenshots and CI.
-    // We render the full layout tree to an off-screen buffer and save
-    // it as a PPM image file, which can be converted to PNG.
     if (!args.screenshot_path.empty()) {
         std::cout << "  Saving screenshot to " << args.screenshot_path
                   << "..." << std::endl;
@@ -468,23 +456,105 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (renderer.init()) {
-        std::cout << "  Framebuffer: " << renderer.info().width << "x"
-                  << renderer.info().height << " @ "
-                  << renderer.info().bits_per_pixel << "bpp" << std::endl;
-        renderer.render(*root_box);
-        std::cout << "  Rendering complete. Press Ctrl+C to exit." << std::endl;
-
-        // Wait for user to exit
-        // TEACHING NOTE: In a real browser, we would now enter the
-        // event loop, processing keyboard input, mouse events, timer
-        // events, etc. We do not have an event loop, so we just wait.
-        ::signal(SIGINT, [](int) { ::exit(0); });
-        ::pause();
+    // Try backends in order: detected backend first, then fallbacks.
+    // TEACHING NOTE: On a Wayland desktop, XWayland is usually available,
+    // so X11 often works even when Wayland is detected. We try the
+    // detected backend first, then fall back to the others.
+    chinstrap::DisplayBackend try_order[3];
+    try_order[0] = backend;
+    if (backend == chinstrap::DisplayBackend::WAYLAND) {
+        try_order[1] = chinstrap::DisplayBackend::X11;
+        try_order[2] = chinstrap::DisplayBackend::FRAMEBUFFER;
+    } else if (backend == chinstrap::DisplayBackend::X11) {
+        try_order[1] = chinstrap::DisplayBackend::WAYLAND;
+        try_order[2] = chinstrap::DisplayBackend::FRAMEBUFFER;
     } else {
-        std::cout << "  No framebuffer available, rendering to stdout..." << std::endl;
-        renderer.render(*root_box);
+        try_order[1] = chinstrap::DisplayBackend::X11;
+        try_order[2] = chinstrap::DisplayBackend::WAYLAND;
     }
 
+    chinstrap::Display display;
+    bool display_ok = false;
+    std::string used_backend_name;
+
+    for (int i = 0; i < 3 && !display_ok; i++) {
+        const char* name = "unknown";
+        switch (try_order[i]) {
+            case chinstrap::DisplayBackend::WAYLAND: name = "Wayland"; break;
+            case chinstrap::DisplayBackend::X11: name = "X11"; break;
+            case chinstrap::DisplayBackend::FRAMEBUFFER: name = "Framebuffer"; break;
+        }
+        std::cout << "  Trying backend: " << name << "..." << std::endl;
+        if (display.init(try_order[i], config.viewport_width, config.viewport_height)) {
+            display_ok = true;
+            used_backend_name = name;
+            std::cout << "  Using backend: " << name << std::endl;
+        } else {
+            std::cout << "  Backend " << name << " failed" << std::endl;
+        }
+    }
+
+    if (!display_ok) {
+        // All backends failed - fall back to stdout rendering
+        std::cout << "  No display backend available, rendering to stdout..." << std::endl;
+        renderer.render(*root_box);
+        return 0;
+    }
+
+    std::cout << "  Display: " << display.get_width() << "x"
+              << display.get_height() << std::endl;
+
+    // Render the page to an off-screen RGB buffer, then copy to the display.
+    // TEACHING NOTE: We use render_to_buffer() which renders the full page
+    // (including browser UI chrome) into a raw RGB pixel buffer. Then we
+    // convert RGB to BGRA (the format X11 and Wayland expect) and write it
+    // to the display back buffer, and call flip() to present it.
+    std::cout << "  Rendering page..." << std::endl;
+    renderer.set_screenshot_url(url_string);
+    std::vector<uint8_t> rgb = renderer.render_to_buffer(
+        *root_box, display.get_width(), display.get_height());
+
+    // Convert RGB to BGRA for the display back buffer
+    int dw = display.get_width();
+    int dh = display.get_height();
+    int dstride = display.get_stride();
+    uint8_t* dbuf = display.get_buffer();
+    if (dbuf && dstride >= dw * 4) {
+        for (int y = 0; y < dh; y++) {
+            for (int x = 0; x < dw; x++) {
+                size_t src_idx = static_cast<size_t>((y * dw + x) * 3);
+                size_t dst_idx = static_cast<size_t>(y * dstride + x * 4);
+                dbuf[dst_idx + 0] = rgb[src_idx + 2];  // B
+                dbuf[dst_idx + 1] = rgb[src_idx + 1];  // G
+                dbuf[dst_idx + 2] = rgb[src_idx + 0];  // R
+                dbuf[dst_idx + 3] = 255;               // A (opaque)
+            }
+        }
+    }
+
+    display.set_title("Chinstrap - " + url_string);
+    display.flip();
+    std::cout << "  Rendering complete. Press Ctrl+C to exit." << std::endl;
+
+    // Event loop: poll for events, redraw on expose, exit on close/Ctrl+C.
+    // TEACHING NOTE: In a real browser, the event loop handles keyboard,
+    // mouse, timer, network, and IPC events. Here we just poll the display
+    // for events and exit when the window is closed or Ctrl+C is pressed.
+    ::signal(SIGINT, [](int) { ::exit(0); });
+
+    bool running = true;
+    while (running) {
+        // Sleep briefly to avoid consuming 100% CPU
+        ::usleep(100000);  // 100ms
+
+        // Process display events
+        if (!display.process_events()) {
+            // Window was closed
+            running = false;
+            std::cout << "  Window closed. Exiting." << std::endl;
+        }
+    }
+
+    display.shutdown();
     return 0;
 }

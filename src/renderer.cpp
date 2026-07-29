@@ -1921,4 +1921,51 @@ void Renderer::render_to_ppm(const Box& root, const std::string& filename,
     initialized_ = was_initialized;
 }
 
+// =========================================================================
+// render_to_buffer - Render page to an off-screen RGB pixel buffer
+// =========================================================================
+// TEACHING NOTE: This method renders the full page (including browser UI)
+// into a raw RGB pixel buffer. It works exactly like render_to_ppm but
+// returns the buffer instead of writing a file. The buffer is in RGB
+// format (3 bytes per pixel, row-major, no padding). This buffer can
+// then be converted to BGRA for X11 put_image or Wayland shm.
+
+std::vector<uint8_t> Renderer::render_to_buffer(const Box& root, int width, int height) {
+    // Create an off-screen RGB buffer (white background)
+    std::vector<uint8_t> buffer(static_cast<size_t>(width) * static_cast<size_t>(height) * 3, 255);
+
+    // Save the current framebuffer state
+    bool was_initialized = initialized_;
+    uint8_t* saved_fb = fb_mem_;
+    FramebufferInfo saved_info = fb_info_;
+
+    // Set up a virtual framebuffer pointing at our buffer
+    fb_mem_ = buffer.data();
+    fb_info_.width = width;
+    fb_info_.height = height;
+    fb_info_.bits_per_pixel = 24;
+    fb_info_.bytes_per_pixel = 3;
+    fb_info_.line_length = width * 3;
+    fb_info_.red_pos = 0;
+    fb_info_.green_pos = 8;
+    fb_info_.blue_pos = 16;
+    fb_info_.alpha_pos = 24;
+    fb_info_.smem_len = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    initialized_ = true;
+
+    // Draw the browser UI frame at the top
+    const int ui_height = 80;
+    draw_browser_ui(width, ui_height);
+
+    // Render the page content below the UI bar
+    render_box(root, 0, ui_height);
+
+    // Restore state
+    fb_mem_ = saved_fb;
+    fb_info_ = saved_info;
+    initialized_ = was_initialized;
+
+    return buffer;
+}
+
 } // namespace chinstrap
