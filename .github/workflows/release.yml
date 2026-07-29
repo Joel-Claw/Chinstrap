@@ -63,9 +63,10 @@ jobs:
           cp assets/fonts/*.ttf pkg/usr/share/chinstrap/fonts/ 2>/dev/null || true
           cp cmake/debian/chinstrap.desktop pkg/usr/share/applications/
           cp assets/icon.svg pkg/usr/share/icons/hicolor/scalable/apps/chinstrap.svg
-          cat > pkg/DEBIAN/control << 'CTRL'
+          VERSION_NUM=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          cat > pkg/DEBIAN/control << CTRL
           Package: chinstrap
-          Version: ${{ github.ref_name }}
+          Version: ${VERSION_NUM}
           Section: web
           Priority: optional
           Architecture: amd64
@@ -88,7 +89,7 @@ jobs:
           Homepage: https://github.com/Joel-Claw/Chinstrap
           License: CC0-1.0
           CTRL
-          dpkg-deb --build --root-owner-group pkg chinstrap_${{ github.ref_name }}_amd64.deb
+          dpkg-deb --build --root-owner-group pkg chinstrap_${VERSION_NUM}_amd64.deb
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
@@ -134,9 +135,10 @@ jobs:
           cp assets/fonts/*.ttf pkg/usr/share/chinstrap/fonts/ 2>/dev/null || true
           cp cmake/debian/chinstrap.desktop pkg/usr/share/applications/
           cp assets/icon.svg pkg/usr/share/icons/hicolor/scalable/apps/chinstrap.svg
-          cat > pkg/.PKGINFO << 'PKGINFO'
+          VERSION_NUM=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          cat > pkg/.PKGINFO << PKGINFO
           pkgname = chinstrap
-          pkgver = ${{ github.ref_name }}-1
+          pkgver = ${VERSION_NUM}-1
           pkgdesc = Educational from-scratch web browser (zero third-party libraries)
           url = https://github.com/Joel-Claw/Chinstrap
           builddate = $(date +%s)
@@ -147,7 +149,7 @@ jobs:
           depend = glibc
           PKGINFO
           cd pkg
-          tar -cf - .PKGINFO usr/ | zstd -19 -o ../chinstrap_${{ github.ref_name }}_x86_64.pkg.tar.zst
+          tar -cf - .PKGINFO usr/ | zstd -19 -o ../chinstrap_${VERSION_NUM}_x86_64.pkg.tar.zst
 
       - name: Upload .pkg.tar.zst artifact
         uses: actions/upload-artifact@v4
@@ -187,8 +189,8 @@ jobs:
       - name: Rename standalone binary
         run: |
           cd release-assets
-          mv chinstrap chinstrap_${{ github.ref_name }}_x86_64
-          chmod +x chinstrap_${{ github.ref_name }}_x86_64
+          mv chinstrap chinstrap_${VERSION_NUM}_x86_64
+          chmod +x chinstrap_${VERSION_NUM}_x86_64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
