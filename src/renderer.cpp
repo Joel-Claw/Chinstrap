@@ -1456,6 +1456,64 @@ void Renderer::render_to_stdout(const Box& root) {
 // with: convert screenshot.ppm screenshot.png
 // =========================================================================
 
+// =========================================================================
+// draw_browser_ui - Draw browser chrome (address bar, nav buttons)
+// =========================================================================
+// TEACHING NOTE: A real browser has UI elements around the page content:
+// tab bar, address bar, back/forward buttons, menu, etc. For screenshots,
+// we draw a simplified browser frame so the screenshot looks like a browser
+// window, not just a raw page render.
+// =========================================================================
+
+void Renderer::draw_browser_ui(int width, int ui_height) {
+    // Top bar background: dark gray (#333333)
+    RenderColor bar_bg(0x33, 0x33, 0x33);
+    fill_rect(0, 0, width, ui_height, bar_bg);
+
+    // Back button (left side): light gray rect at x=8
+    RenderColor btn_color(0x88, 0x88, 0x88);
+    fill_rect(8, 10, 24, 20, btn_color);
+    // Draw a left-pointing arrow in white inside the back button
+    RenderColor arrow_white(255, 255, 255);
+    for (int i = 0; i < 10; i++) {
+        put_pixel_internal(12 + i, 20 - i, arrow_white);
+        put_pixel_internal(12 + i, 20 + i, arrow_white);
+    }
+    for (int i = 0; i < 6; i++) {
+        put_pixel_internal(18, 20 - 5 + i, arrow_white);
+    }
+
+    // Forward button: light gray rect at x=40
+    fill_rect(40, 10, 24, 20, btn_color);
+    // Draw a right-pointing arrow in white inside the forward button
+    for (int i = 0; i < 10; i++) {
+        put_pixel_internal(54 - i, 20 - i, arrow_white);
+        put_pixel_internal(54 - i, 20 + i, arrow_white);
+    }
+    for (int i = 0; i < 6; i++) {
+        put_pixel_internal(48, 20 - 5 + i, arrow_white);
+    }
+
+    // Address bar: white rect from x=72 to width-10
+    RenderColor addr_bg(255, 255, 255);
+    int addr_x = 72;
+    int addr_y = 8;
+    int addr_w = width - addr_x - 10;
+    int addr_h = 24;
+    fill_rect(addr_x, addr_y, addr_w, addr_h, addr_bg);
+
+    // URL text in the address bar (black text)
+    if (!screenshot_url_.empty()) {
+        // Truncate URL if too long for the address bar
+        int max_url_width = addr_w - 10;
+        draw_text(addr_x + 5, addr_y + 4, screenshot_url_, RenderColor::black(), max_url_width);
+    }
+
+    // Thin separator line below the UI bar
+    RenderColor sep(0x55, 0x55, 0x55);
+    fill_rect(0, ui_height - 1, width, 1, sep);
+}
+
 void Renderer::render_to_ppm(const Box& root, const std::string& filename,
                                int width, int height) {
     // Create an off-screen RGB buffer
@@ -1481,8 +1539,18 @@ void Renderer::render_to_ppm(const Box& root, const std::string& filename,
     fb_info_.smem_len = width * height * 3;
     initialized_ = true;
 
-    // Render the box tree to our virtual framebuffer
-    render(root);
+    // Draw the browser UI frame at the top
+    // TEACHING NOTE: We draw a simplified browser chrome with:
+    //   - Dark gray top bar (40px tall)
+    //   - Back/forward button shapes
+    //   - White address bar with the URL text
+    //   - Page content below the UI bar
+    const int ui_height = 40;
+    draw_browser_ui(width, ui_height);
+
+    // Render the page content below the UI bar
+    // We use render_box with a y-offset so content starts at ui_height
+    render_box(root, 0, ui_height);
 
     // Write PPM file
     std::ofstream out(filename, std::ios::binary);

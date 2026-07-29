@@ -119,6 +119,11 @@ public:
     // Get all text content (recursive)
     std::string text() const;
 
+    // Get visible text content (recursive, but skips script/style/
+    // head/title/meta/link/noscript elements whose text should never
+    // appear as rendered page content)
+    std::string visible_text() const;
+
     // Find first child element with tag name
     const Node* find_first(const std::string& tag) const;
 

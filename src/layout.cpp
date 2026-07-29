@@ -152,6 +152,26 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
 
     if (node.type == NodeType::Text) {
         // Text node
+        // TEACHING NOTE: Some HTML elements contain text that should
+        // never be displayed as visible page content. This includes
+        // <script>, <style>, <head>, <title>, <meta>, <link>, and
+        // <noscript>. We check the parent tag and create an invisible
+        // (zero-size, empty-text) box for text inside these elements.
+        // Without this check, the browser would render raw JavaScript
+        // and CSS source code as visible text on the page.
+        if (node.parent) {
+            const std::string& ptag = node.parent->tag_name;
+            if (ptag == "script" || ptag == "style" ||
+                ptag == "head" || ptag == "title" ||
+                ptag == "meta" || ptag == "link" ||
+                ptag == "noscript") {
+                box->type = Box::Type::Text;
+                box->text = "";
+                box->width = 0;
+                box->height = 0;
+                return box;
+            }
+        }
         box->type = Box::Type::Text;
         box->text = node.text_content;
         box->width = available_width;
@@ -178,6 +198,22 @@ std::unique_ptr<Box> LayoutEngine::layout_node(const Node& node, float x, float 
     }
 
     // Element node
+    // TEACHING NOTE: <script> and <style> elements should never produce
+    // visible boxes. Their text content is code (JavaScript or CSS), not
+    // page content. We create a zero-height box and do not recurse into
+    // children, so the code text never appears in the rendered output.
+    if (node.type == NodeType::Element) {
+        if (node.tag_name == "script" || node.tag_name == "style" ||
+            node.tag_name == "head" || node.tag_name == "title" ||
+            node.tag_name == "meta" || node.tag_name == "link" ||
+            node.tag_name == "noscript") {
+            box->type = Box::Type::Block;
+            box->width = 0;
+            box->height = 0;
+            return box;
+        }
+    }
+
     ComputedStyle style = StyleEngine::get_computed_style(node);
 
     // Determine if block or inline
@@ -322,8 +358,12 @@ void LayoutEngine::layout_inline_children(Box& parent_box, const Node& parent_no
     float current_x = parent_box.padding.left;
     float max_width = available_width - parent_box.padding.left - parent_box.padding.right;
 
-    // Collect text content and wrap
-    std::string text = parent_node.text();
+    // Collect visible text content and wrap
+    // TEACHING NOTE: We use visible_text() instead of text() because
+    // text() recursively collects ALL text including JavaScript inside
+    // <script> and CSS inside <style>. visible_text() skips those
+    // elements so raw code does not leak into the rendered page.
+    std::string text = parent_node.visible_text();
 
     // Simple word wrapping
     // TEACHING NOTE: We split text into words and place them one by one.

@@ -366,6 +366,7 @@ int main(int argc, char* argv[]) {
     if (!args.screenshot_path.empty()) {
         std::cout << "  Saving screenshot to " << args.screenshot_path
                   << "..." << std::endl;
+        renderer.set_screenshot_url(url_string);
         renderer.render_to_ppm(*root_box, args.screenshot_path,
                                 config.viewport_width, config.viewport_height);
         return 0;

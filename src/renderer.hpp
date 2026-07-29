@@ -183,6 +183,9 @@ public:
     // any image encoding library. We can convert PPM to PNG with tools.
     void render_to_ppm(const Box& root, const std::string& filename, int width = 1024, int height = 768);
 
+    // Set the URL to display in the browser UI frame (for screenshots)
+    void set_screenshot_url(const std::string& url) { screenshot_url_ = url; }
+
 private:
     int fb_fd_ = -1;
     FramebufferInfo fb_info_;
@@ -219,6 +222,12 @@ private:
     // TTF font instance (null if TTF loading failed)
     std::unique_ptr<class Font> ttf_font_;
     bool ttf_available_ = false;
+
+    // URL to display in the browser UI frame (for screenshots)
+    std::string screenshot_url_;
+
+    // Draw the browser UI frame (address bar, nav buttons) at the top
+    void draw_browser_ui(int width, int ui_height);
 };
 
 } // namespace chinstrap

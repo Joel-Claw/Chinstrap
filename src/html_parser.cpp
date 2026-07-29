@@ -57,6 +57,34 @@ std::string Node::text() const {
     return result;
 }
 
+// TEACHING NOTE: Some HTML elements contain text that should never be
+// displayed as visible page content. This includes <script> (JavaScript
+// source code), <style> (CSS rules), <head> (metadata), <title> (page
+// title shown in the tab bar, not the page), <meta>, <link>, and
+// <noscript>. The visible_text() method is like text() but skips these
+// elements entirely. This is used by the layout engine when collecting
+// inline text content, so that raw JavaScript and CSS code does not leak
+// into the rendered page.
+static bool is_non_visible_element(const Node& node) {
+    if (node.type != NodeType::Element) return false;
+    return node.tag_name == "script" || node.tag_name == "style" ||
+           node.tag_name == "head" || node.tag_name == "title" ||
+           node.tag_name == "meta" || node.tag_name == "link" ||
+           node.tag_name == "noscript";
+}
+
+std::string Node::visible_text() const {
+    std::string result;
+    if (type == NodeType::Text) {
+        result = text_content;
+    }
+    for (const auto& child : children) {
+        if (is_non_visible_element(*child)) continue;
+        result += child->visible_text();
+    }
+    return result;
+}
+
 const Node* Node::find_first(const std::string& tag) const {
     for (const auto& child : children) {
         if (child->type == NodeType::Element && child->tag_name == tag) {
