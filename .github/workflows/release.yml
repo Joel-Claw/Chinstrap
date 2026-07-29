@@ -2,18 +2,20 @@
 # Release CI Workflow
 # =========================================================================
 # TEACHING NOTE: This workflow runs when a version tag (v*) is pushed.
-# It builds the project on both Debian and Arch, then creates a GitHub
-# Release with downloadable package assets (.deb and .pkg.tar.zst).
+# It builds x86_64 binaries on both Debian (Ubuntu) and Arch Linux,
+# creates proper packages (.deb and .pkg.tar.zst), and attaches them
+# to a GitHub Release.
 #
 # The flow is:
-#   1. Tag pushed (e.g., "git tag v0.1.0 && git push --tags")
+#   1. Tag pushed (e.g., "git tag v0.2.0 && git push --tags")
 #   2. This workflow triggers
-#   3. Build jobs run in parallel for each distro
-#   4. Packages are uploaded as release assets
+#   3. Build jobs run in parallel: Ubuntu (x86_64 .deb) and Arch (x86_64 .pkg.tar.zst)
+#   4. A standalone x86_64 binary is also produced
+#   5. All artifacts are uploaded to the GitHub Release
 #
-# The .deb is built via CPack on Ubuntu.
-# The .pkg.tar.zst is built via makepkg on Arch.
-# Both are attached to the same GitHub Release.
+# The .deb is built manually (dpkg-deb) for full control over contents.
+# The .pkg.tar.zst is built manually (tar + zstd) for Arch compatibility.
+# Both include the binary, fonts, desktop file, and icon.
 # =========================================================================
 
 name: Release
@@ -31,10 +33,10 @@ permissions:
 
 jobs:
   # -------------------------------------------------------------------------
-  # Build .deb package on Ubuntu
+  # Build x86_64 .deb package on Ubuntu
   # -------------------------------------------------------------------------
-  build-deb:
-    name: Build .deb (Ubuntu)
+  build-deb-x86_64:
+    name: Build .deb (x86_64, Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -43,35 +45,68 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ make libx11-dev
+          sudo apt-get install -y cmake g++ make
 
       - name: Configure and Build
         run: |
           mkdir -p build
           cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j"$(nproc)"
+          make -j"$(nproc)" chinstrap
+          strip chinstrap
 
-      # TEACHING NOTE: "make package" runs CPack, which reads the
-      # packaging.cmake file and produces .deb and .tar.gz packages.
-      # The output goes to the build directory.
-      - name: Create packages
+      - name: Create .deb package
         run: |
-          cd build
-          make package
+          mkdir -p pkg/DEBIAN pkg/usr/bin pkg/usr/share/chinstrap/fonts \
+            pkg/usr/share/applications pkg/usr/share/icons/hicolor/scalable/apps
+          cp build/chinstrap pkg/usr/bin/
+          cp assets/fonts/*.ttf pkg/usr/share/chinstrap/fonts/ 2>/dev/null || true
+          cp cmake/debian/chinstrap.desktop pkg/usr/share/applications/
+          cp assets/icon.svg pkg/usr/share/icons/hicolor/scalable/apps/chinstrap.svg
+          cat > pkg/DEBIAN/control << 'CTRL'
+          Package: chinstrap
+          Version: ${{ github.ref_name }}
+          Section: web
+          Priority: optional
+          Architecture: amd64
+          Depends: libstdc++6, libc6, libgcc-s1
+          Maintainer: Chinstrap Project <https://github.com/Joel-Claw/Chinstrap>
+          Description: Educational from-scratch web browser (zero third-party libraries)
+           Chinstrap is a web browser written entirely in C++17 with no external
+           dependencies. It implements its own HTML parser, CSS engine, JavaScript
+           interpreter, TLS stack, HTTP client, and rendering pipeline from scratch.
+           .
+           Features:
+            * HTML5 parsing
+            * CSS3 parsing and layout
+            * JavaScript ES6 interpreter
+            * TLS 1.2/1.3 encryption
+            * HTTP/1.1 and HTTP/2 support
+            * X11/Wayland/framebuffer backends
+            * Plugin system (shared libraries)
+            * CC0 licensed fonts bundled
+          Homepage: https://github.com/Joel-Claw/Chinstrap
+          License: CC0-1.0
+          CTRL
+          dpkg-deb --build --root-owner-group pkg chinstrap_${{ github.ref_name }}_amd64.deb
 
-      # Upload the .deb as a build artifact for the release job to pick up.
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deb-package
-          path: build/*.deb
+          name: deb-x86_64
+          path: chinstrap_*.deb
+
+      - name: Upload standalone binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-x86_64
+          path: build/chinstrap
 
   # -------------------------------------------------------------------------
-  # Build .pkg.tar.zst package on Arch
+  # Build x86_64 .pkg.tar.zst package on Arch
   # -------------------------------------------------------------------------
-  build-arch:
-    name: Build .pkg.tar.zst (Arch)
+  build-arch-x86_64:
+    name: Build .pkg.tar.zst (x86_64, Arch)
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
@@ -81,59 +116,80 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm cmake gcc make libx11
+          pacman -S --noconfirm cmake gcc make zstd tar
 
       - name: Configure and Build
         run: |
           mkdir -p build
           cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j"$(nproc)"
+          make -j"$(nproc)" chinstrap
+          strip chinstrap
 
-      # TEACHING NOTE: On Arch, we could use makepkg with the PKGBUILD,
-      # but in CI it is simpler to use CPack. The TGZ generator produces
-      # a tarball that Arch users can extract. For a true .pkg.tar.zst,
-      # you would copy the PKGBUILD into a clean dir and run makepkg.
-      # We produce the CPack TGZ here for simplicity.
-      - name: Create packages
+      - name: Create .pkg.tar.zst package
         run: |
-          cd build
-          make package
+          mkdir -p pkg/usr/bin pkg/usr/share/chinstrap/fonts \
+            pkg/usr/share/applications pkg/usr/share/icons/hicolor/scalable/apps
+          cp build/chinstrap pkg/usr/bin/
+          cp assets/fonts/*.ttf pkg/usr/share/chinstrap/fonts/ 2>/dev/null || true
+          cp cmake/debian/chinstrap.desktop pkg/usr/share/applications/
+          cp assets/icon.svg pkg/usr/share/icons/hicolor/scalable/apps/chinstrap.svg
+          cat > pkg/.PKGINFO << 'PKGINFO'
+          pkgname = chinstrap
+          pkgver = ${{ github.ref_name }}-1
+          pkgdesc = Educational from-scratch web browser (zero third-party libraries)
+          url = https://github.com/Joel-Claw/Chinstrap
+          builddate = $(date +%s)
+          packager = Chinstrap Project
+          arch = x86_64
+          license = CC0-1.0
+          depend = libstdc++6
+          depend = glibc
+          PKGINFO
+          cd pkg
+          tar -cf - .PKGINFO usr/ | zstd -19 -o ../chinstrap_${{ github.ref_name }}_x86_64.pkg.tar.zst
 
-      - name: Upload tarball artifact
+      - name: Upload .pkg.tar.zst artifact
         uses: actions/upload-artifact@v4
         with:
-          name: arch-package
-          path: build/*.tar.gz
+          name: arch-x86_64
+          path: chinstrap_*.pkg.tar.zst
 
   # -------------------------------------------------------------------------
   # Create GitHub Release with all artifacts
   # -------------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [build-deb, build-arch]
+    needs: [build-deb-x86_64, build-arch-x86_64]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # Download both artifacts from the build jobs
       - name: Download .deb
         uses: actions/download-artifact@v4
         with:
-          name: deb-package
+          name: deb-x86_64
           path: release-assets/
 
-      - name: Download Arch tarball
+      - name: Download Arch package
         uses: actions/download-artifact@v4
         with:
-          name: arch-package
+          name: arch-x86_64
           path: release-assets/
 
-      # TEACHING NOTE: softprops/action-gh-release is a popular action
-      # for creating GitHub Releases. It takes a tag name (from the
-      # pushed tag) and attaches files from a directory. The "draft"
-      # flag lets you review the release before publishing.
+      - name: Download standalone binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-x86_64
+          path: release-assets/
+
+      - name: Rename standalone binary
+        run: |
+          cd release-assets
+          mv chinstrap chinstrap_${{ github.ref_name }}_x86_64
+          chmod +x chinstrap_${{ github.ref_name }}_x86_64
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -144,11 +200,50 @@ jobs:
           body: |
             ## Chinstrap ${{ github.ref_name }}
 
-            A from-scratch web browser with zero third-party libraries.
+            A from-scratch web browser with zero third-party libraries. CC0 licensed.
 
-            ### Downloads
-            - **Debian/Ubuntu**: Download the `.deb` file and install with `dpkg -i chinstrap-*.deb`
-            - **Arch Linux**: Download the `.tar.gz` file and extract, or use the PKGBUILD from the repository with `makepkg -si`
+            ### Downloads (x86_64)
+
+            - **chinstrap_*_amd64.deb** - Debian/Ubuntu package (x86_64)
+            - **chinstrap_*_x86_64.pkg.tar.zst** - Arch Linux package (x86_64)
+            - **chinstrap_*_x86_64** - Standalone binary (no install needed)
+
+            ### Install
+
+            Debian/Ubuntu:
+            ```
+            sudo dpkg -i chinstrap_*_amd64.deb
+            chinstrap http://example.com
+            ```
+
+            Arch Linux:
+            ```
+            sudo pacman -U chinstrap_*_x86_64.pkg.tar.zst
+            chinstrap http://example.com
+            ```
+
+            Standalone binary:
+            ```
+            chmod +x chinstrap_*_x86_64
+            ./chinstrap_*_x86_64 http://example.com
+            ```
+
+            ### Build from source
+
+            ```
+            git clone https://github.com/Joel-Claw/Chinstrap.git
+            cd Chinstrap
+            mkdir build && cd build
+            cmake ..
+            make -j2
+            ctest --output-on-failure
+            ./chinstrap http://example.com
+            ```
+
+            ### License
+
+            CC0 1.0 Universal (Public Domain Dedication)
           files: |
             release-assets/*.deb
-            release-assets/*.tar.gz
+            release-assets/*.pkg.tar.zst
+            release-assets/chinstrap_*_x86_64
