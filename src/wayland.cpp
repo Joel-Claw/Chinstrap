@@ -213,10 +213,10 @@ bool WaylandConnection::connect() {
     m_sync_callback_id = 0;
 
     // Send sync request using the public send_message API
-    // wl_display::sync (opcode 1)
+    // wl_display::sync (opcode 0)
     // Payload: new_id for the callback object (uint32)
     m_sync_callback_id = allocate_id();
-    send_message(1, 1, &m_sync_callback_id, 4);
+    send_message(1, 0, &m_sync_callback_id, 4);
 
     // Process events until sync callback is done.
     // We do up to 10 round-trips to be safe (in case of reentrancy).
@@ -255,7 +255,7 @@ bool WaylandConnection::connect() {
     {
         m_sync_done = false;
         m_sync_callback_id = allocate_id();
-        send_message(1, 1, &m_sync_callback_id, 4);
+        send_message(1, 0, &m_sync_callback_id, 4);
 
         int mode_attempts = 0;
         while (!m_sync_done && mode_attempts < 100) {
@@ -630,7 +630,7 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
         if (opcode == 0) {
             // xdg_wm_base::ping
             // Args: serial (uint32)
-            // We must respond with xdg_wm_base::pong (opcode 1)
+            // We must respond with xdg_wm_base::pong (opcode 0)
             if (args_len >= 4) {
                 uint32_t serial = get_u32_le(&args[0]);
                 send_xdg_pong(serial);
@@ -642,7 +642,7 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
         if (opcode == 0) {
             // xdg_surface::configure
             // Args: serial (uint32)
-            // We must respond with xdg_surface::ack_configure (opcode 1)
+            // We must respond with xdg_surface::ack_configure (opcode 0)
             if (args_len >= 4) {
                 uint32_t serial = get_u32_le(&args[0]);
                 send_xdg_ack_configure(m_event_xdg_surface_id, serial);
@@ -662,7 +662,7 @@ void WaylandConnection::send_get_registry() {
     // This request asks the compositor to create a wl_registry object for
     // us. The registry will advertise all available global objects.
     //
-    // Request: wl_display::get_registry (opcode 2)
+    // Request: wl_display::get_registry (opcode 1)
     //   new_id: registry  (uint32 - client-allocated object ID)
     //
     // We allocate an ID for the registry and send it to the compositor.
@@ -670,9 +670,9 @@ void WaylandConnection::send_get_registry() {
     // wl_registry::global events for each available interface.
 
     m_registry_id = allocate_id();
-    // wl_display::get_registry (opcode 2)
+    // wl_display::get_registry (opcode 1)
     // Payload: new_id for the registry object (uint32)
-    send_message(1, 2, &m_registry_id, 4);
+    send_message(1, 1, &m_registry_id, 4);
 }
 
 void WaylandConnection::send_bind(uint32_t name, const char* interface,
@@ -802,27 +802,27 @@ void WaylandConnection::handle_output_mode(uint32_t flags, int32_t width,
 }
 
 void WaylandConnection::send_xdg_pong(uint32_t serial) {
-    // xdg_wm_base::pong (opcode 1)
+    // xdg_wm_base::pong (opcode 0)
     // Args: serial (uint32)
     // Sent in response to xdg_wm_base::ping to prove the client is alive.
     if (m_xdg_wm_base_id == 0) return;
-    send_message(m_xdg_wm_base_id, 1, &serial, 4);
+    send_message(m_xdg_wm_base_id, 0, &serial, 4);
 }
 
 void WaylandConnection::send_xdg_ack_configure(uint32_t xdg_surface_id,
                                                   uint32_t serial) {
-    // xdg_surface::ack_configure (opcode 1)
+    // xdg_surface::ack_configure (opcode 0)
     // Args: serial (uint32)
     // Sent in response to xdg_surface::configure to acknowledge the
     // new configuration before committing.
-    send_message(xdg_surface_id, 1, &serial, 4);
+    send_message(xdg_surface_id, 0, &serial, 4);
 }
 
 bool WaylandConnection::roundtrip() {
     // Do a sync round-trip: send sync, wait for callback done.
     m_sync_done = false;
     uint32_t cb_id = allocate_id();
-    send_message(1, 1, &cb_id, 4);
+    send_message(1, 0, &cb_id, 4);
 
     // Save the old callback ID and use the new one
     uint32_t old_cb = m_sync_callback_id;
@@ -1017,11 +1017,11 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     // screen. The process is:
     //
     // 1. Create an xdg_surface from the wl_surface:
-    //    xdg_wm_base::get_xdg_surface (opcode 1)
+    //    xdg_wm_base::get_xdg_surface (opcode 0)
     //    Args: new_id xdg_surface, object wl_surface
     //
     // 2. Create an xdg_toplevel from the xdg_surface:
-    //    xdg_surface::get_toplevel (opcode 1)
+    //    xdg_surface::get_toplevel (opcode 0)
     //    Args: new_id xdg_toplevel (no other args except header)
     //
     // 3. Set the window title:
@@ -1029,22 +1029,22 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     //    Args: string title
     //
     // 4. Commit the surface to make it visible:
-    //    wl_surface::commit (opcode 6)
+    //    wl_surface::commit (opcode 5)
     //
     // The compositor will send xdg_surface::configure events with a
     // serial that must be acknowledged via xdg_surface::ack_configure
     // before the next commit.
 
-    // Step 1: Create xdg_surface via xdg_wm_base::get_xdg_surface (opcode 1)
+    // Step 1: Create xdg_surface via xdg_wm_base::get_xdg_surface (opcode 0)
     m_xdg_surface_id = conn->allocate_id();
     uint8_t payload[8];
     put_u32_le(&payload[0], m_xdg_surface_id);  // new_id for xdg_surface
     put_u32_le(&payload[4], m_surface_id);       // wl_surface object
-    conn->send_message(conn->get_xdg_wm_base_id(), 1, payload, 8);
+    conn->send_message(conn->get_xdg_wm_base_id(), 0, payload, 8);
 
-    // Step 2: Create xdg_toplevel via xdg_surface::get_toplevel (opcode 1)
+    // Step 2: Create xdg_toplevel via xdg_surface::get_toplevel (opcode 0)
     m_xdg_toplevel_id = conn->allocate_id();
-    conn->send_message(m_xdg_surface_id, 1, &m_xdg_toplevel_id, 4);
+    conn->send_message(m_xdg_surface_id, 0, &m_xdg_toplevel_id, 4);
 
     // Step 3: Set the title via xdg_toplevel::set_title (opcode 0)
     // We use a default title; the caller can change it later via set_title().
@@ -1079,8 +1079,8 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     }
 
     // Step 4: Commit the surface to trigger initial configuration
-    // wl_surface::commit (opcode 6)
-    conn->send_message(m_surface_id, 6, nullptr, 0);
+    // wl_surface::commit (opcode 5)
+    conn->send_message(m_surface_id, 5, nullptr, 0);
 
     // Register the xdg_surface ID so the connection handles configure events
     conn->register_xdg_surface(m_xdg_surface_id);
@@ -1130,8 +1130,8 @@ bool WaylandSurface::wait_for_initial_configure(WaylandConnection* conn) {
 
     // After acking the configure, we must commit the surface again
     // to make the window visible on screen.
-    // wl_surface::commit (opcode 6)
-    conn->send_message(m_surface_id, 6, nullptr, 0);
+    // wl_surface::commit (opcode 5)
+    conn->send_message(m_surface_id, 5, nullptr, 0);
 
     std::cerr << "Wayland: initial configure received and acked" << std::endl;
     return true;
@@ -1186,8 +1186,8 @@ void WaylandSurface::destroy() {
 
     // Destroy the xdg_toplevel
     if (m_xdg_toplevel_id && m_conn) {
-        // xdg_toplevel::destroy (opcode 1)
-        m_conn->send_message(m_xdg_toplevel_id, 1, nullptr, 0);
+        // xdg_toplevel::destroy (opcode 0)
+        m_conn->send_message(m_xdg_toplevel_id, 0, nullptr, 0);
     }
 
     // Destroy the xdg_surface
@@ -1211,8 +1211,8 @@ void WaylandSurface::destroy() {
 
     // Destroy the shm pool
     if (m_pool_id && m_conn) {
-        // wl_shm_pool::destroy (opcode 1)
-        m_conn->send_message(m_pool_id, 1, nullptr, 0);
+        // wl_shm_pool::destroy (opcode 0)
+        m_conn->send_message(m_pool_id, 0, nullptr, 0);
     }
 
     // Unmap the shared memory
@@ -1266,26 +1266,26 @@ void WaylandSurface::destroy() {
 void WaylandSurface::commit_frame(WaylandConnection* conn) {
     if (!m_initialized || !conn) return;
 
-    // wl_surface::attach (opcode 1)
+    // wl_surface::attach (opcode 0)
     // Args: buffer (object_id or 0 for null), x (int32), y (int32)
     uint8_t attach_payload[12];
     put_u32_le(&attach_payload[0], m_buffer_id);  // buffer
     put_u32_le(&attach_payload[4], 0);            // x
     put_u32_le(&attach_payload[8], 0);            // y
-    conn->send_message(m_surface_id, 1, attach_payload, 12);
+    conn->send_message(m_surface_id, 0, attach_payload, 12);
 
-    // wl_surface::damage (opcode 2)
+    // wl_surface::damage (opcode 1)
     // Args: x (int32), y (int32), width (int32), height (int32)
     uint8_t damage_payload[16];
     put_u32_le(&damage_payload[0], 0);                                   // x
     put_u32_le(&damage_payload[4], 0);                                   // y
     put_u32_le(&damage_payload[8], static_cast<uint32_t>(m_width));     // width
     put_u32_le(&damage_payload[12], static_cast<uint32_t>(m_height));   // height
-    conn->send_message(m_surface_id, 2, damage_payload, 16);
+    conn->send_message(m_surface_id, 1, damage_payload, 16);
 
-    // wl_surface::commit (opcode 6)
+    // wl_surface::commit (opcode 5)
     // No arguments
-    conn->send_message(m_surface_id, 6, nullptr, 0);
+    conn->send_message(m_surface_id, 5, nullptr, 0);
 
     // Mark the buffer as busy (compositor is using it)
     m_buffer_busy = true;

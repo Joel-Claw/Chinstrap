@@ -122,3 +122,9 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 # -------------------------------------------------------------------------
 set(CPACK_COMPONENTS_GROUPING "ONE_PER_GROUP")
 set(CPACK_COMPONENTS_ALL "main")
+
+# -------------------------------------------------------------------------
+# Enable CPack - This generates CPackConfig.cmake so "cpack -G DEB" works.
+# Without this line, CPack variables are set but never activated.
+# -------------------------------------------------------------------------
+include(CPack)
