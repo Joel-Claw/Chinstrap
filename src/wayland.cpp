@@ -531,6 +531,8 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
     size_t args_len = len - 8;
 
     // Dispatch based on object ID
+    std::cerr << "WL EVT: obj=" << obj_id << " op=" << opcode
+              << " size=" << len << " args=" << args_len << std::endl;
 
     if (obj_id == 1) {
         // wl_display events
@@ -1134,6 +1136,9 @@ bool WaylandSurface::wait_for_initial_configure(WaylandConnection* conn) {
         }
 
         conn->recv_available();
+        // Temp debug: log buffer size during configure wait
+        std::cerr << "Wayland: configure wait attempt " << attempts
+                  << " recv_buf=" << conn->m_recv_buf.size() << std::endl;
         conn->process_events();
         attempts++;
     }
