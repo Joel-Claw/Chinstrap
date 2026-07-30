@@ -598,18 +598,22 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
             // Args: name (uint32), interface (string), version (uint32)
             if (args_len >= 8) {
                 uint32_t name = get_u32_le(&args[0]);
-                // string at offset 4: length (uint32) + data + null + pad
+                // Wayland string format: uint32 length (INCLUDES null terminator)
+                // followed by length bytes (chars + null), padded to 4-byte boundary.
+                // So total string payload = 4 (length field) + iface_len (chars+null),
+                // then padded to 4 bytes.
                 uint32_t iface_len = get_u32_le(&args[4]);
-                if (args_len >= 8 + iface_len + 1 + 4) {
-                    // interface name (null terminated)
-                    std::string iface(reinterpret_cast<const char*>(&args[8]), iface_len);
-                    // version is after the string + null + padding
-                    size_t str_total = 4 + iface_len + 1;  // length field + chars + null
-                    size_t str_padded = pad4(str_total);
-                    if (args_len >= 4 + str_padded + 4) {
-                        uint32_t version = get_u32_le(&args[4 + str_padded]);
-                        handle_registry_global(name, iface.c_str(), version);
-                    }
+                // String content starts at offset 8, spans iface_len bytes (including null)
+                size_t str_with_header = 4 + iface_len;  // length field + string data
+                size_t str_padded = pad4(str_with_header);
+                // After the padded string: version (uint32)
+                if (args_len >= str_padded + 4) {
+                    // iface_len includes the null, so string is iface_len-1 chars
+                    // std::string can hold the null; c_str() will be correct for strcmp
+                    std::string iface(reinterpret_cast<const char*>(&args[8]),
+                                      iface_len > 0 ? iface_len - 1 : 0);
+                    uint32_t version = get_u32_le(&args[str_padded]);
+                    handle_registry_global(name, iface.c_str(), version);
                 }
             }
         } else if (opcode == 1) {
