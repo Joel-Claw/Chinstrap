@@ -370,6 +370,13 @@ void WaylandConnection::send_message(uint32_t object_id, uint16_t opcode,
         memcpy(&msg[8], payload, len);
     }
 
+    // Debug: hex dump the message
+    std::cerr << "WL SEND:";
+    for (size_t i = 0; i < total_size; i++) {
+        fprintf(stderr, " %02x", msg[i]);
+    }
+    std::cerr << " (obj=" << object_id << " op=" << opcode << " size=" << total_size << ")" << std::endl;
+
     if (fd >= 0) {
         // TEACHING NOTE: Sending file descriptors in Wayland
         // ====================================================================
