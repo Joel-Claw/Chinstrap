@@ -603,16 +603,18 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
                 // So total string payload = 4 (length field) + iface_len (chars+null),
                 // then padded to 4 bytes.
                 uint32_t iface_len = get_u32_le(&args[4]);
-                // String content starts at offset 8, spans iface_len bytes (including null)
-                size_t str_with_header = 4 + iface_len;  // length field + string data
-                size_t str_padded = pad4(str_with_header);
-                // After the padded string: version (uint32)
-                if (args_len >= str_padded + 4) {
-                    // iface_len includes the null, so string is iface_len-1 chars
-                    // std::string can hold the null; c_str() will be correct for strcmp
+                // Layout: name(4) + strlen(4) + string_bytes(iface_len) + padding + version(4)
+                // The string field (strlen + data) is padded to 4-byte boundary.
+                // str_field = 4 + iface_len, padded.
+                size_t str_field = 4 + iface_len;  // strlen field + string data (incl null)
+                size_t str_padded = pad4(str_field);
+                // Version comes after: 4 (name) + str_padded
+                size_t version_offset = 4 + str_padded;
+                if (args_len >= version_offset + 4) {
+                    // iface_len includes the null terminator
                     std::string iface(reinterpret_cast<const char*>(&args[8]),
                                       iface_len > 0 ? iface_len - 1 : 0);
-                    uint32_t version = get_u32_le(&args[str_padded]);
+                    uint32_t version = get_u32_le(&args[version_offset]);
                     handle_registry_global(name, iface.c_str(), version);
                 }
             }
