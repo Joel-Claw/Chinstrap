@@ -538,6 +538,7 @@ bool InputManager::convert_x11_event(const void* x11_event, InputEvent& event) {
 
         case X11_EVENT_EXPOSE:
         case X11_EVENT_CLOSE:
+        case X11_EVENT_MAP_NOTIFY:
         case X11_EVENT_NONE:
             return false;
     }

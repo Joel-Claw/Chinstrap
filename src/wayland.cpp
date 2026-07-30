@@ -139,7 +139,7 @@ WaylandConnection::WaylandConnection()
     , m_sync_callback_id(0)
     , m_supports_xrgb8888(true)  // Assume yes until told otherwise
     , m_event_xdg_surface_id(0)
-{}
+    , m_xdg_configured(false) {}
 
 WaylandConnection::~WaylandConnection() {
     disconnect();
@@ -239,24 +239,35 @@ bool WaylandConnection::connect() {
         attempts++;
     }
 
-    if (!has_globals()) {
-        // Maybe we need another round-trip for output info
-        if (has_globals()) {
-            // Do another sync to get output modes
-            m_sync_done = false;
-            m_sync_callback_id = allocate_id();
-            send_message(1, 1, &m_sync_callback_id, 4);
+    // TEACHING NOTE: Second round-trip for output modes
+    // ====================================================================
+    // The first round-trip gets us the registry globals (compositor, shm,
+    // seat, xdg_wm_base, output). But wl_output::mode events are only
+    // sent after we bind to the output global. Since bind happens during
+    // the first round-trip's event processing, the mode events may still
+    // be in flight. We do a second sync to make sure we have the output
+    // dimensions before creating the surface.
+    //
+    // The old code had a bug here: it checked has_globals() again inside
+    // the !has_globals() block, which was dead code (same condition).
+    // Now we always do a second round-trip unconditionally to collect
+    // any output mode events that arrived after the first round-trip.
+    {
+        m_sync_done = false;
+        m_sync_callback_id = allocate_id();
+        send_message(1, 1, &m_sync_callback_id, 4);
 
-            while (!m_sync_done) {
-                struct pollfd pfd;
-                pfd.fd = m_fd;
-                pfd.events = POLLIN;
-                pfd.revents = 0;
-                int ret = ::poll(&pfd, 1, 5000);
-                if (ret <= 0) break;
-                recv_available();
-                process_events();
-            }
+        int mode_attempts = 0;
+        while (!m_sync_done && mode_attempts < 100) {
+            struct pollfd pfd;
+            pfd.fd = m_fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            int ret = ::poll(&pfd, 1, 5000);
+            if (ret <= 0) break;
+            recv_available();
+            process_events();
+            mode_attempts++;
         }
     }
 
@@ -315,6 +326,7 @@ void WaylandConnection::disconnect() {
     m_output_id = 0;
     m_xdg_wm_base_id = 0;
     m_event_xdg_surface_id = 0;
+    m_xdg_configured = false;
 }
 
 uint32_t WaylandConnection::allocate_id() {
@@ -634,6 +646,7 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
             if (args_len >= 4) {
                 uint32_t serial = get_u32_le(&args[0]);
                 send_xdg_ack_configure(m_event_xdg_surface_id, serial);
+                m_xdg_configured = true;
             }
         }
     }
@@ -850,7 +863,8 @@ WaylandSurface::WaylandSurface()
     , m_width(0)
     , m_height(0)
     , m_buffer_busy(false)
-    , m_initialized(false) {}
+    , m_initialized(false)
+    , m_configured(false) {}
 
 WaylandSurface::~WaylandSurface() {
     destroy();
@@ -1074,6 +1088,55 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     return true;
 }
 
+bool WaylandSurface::wait_for_initial_configure(WaylandConnection* conn) {
+    // TEACHING NOTE: xdg_surface initial configure handshake
+    // ====================================================================
+    // After creating an xdg_surface and xdg_toplevel, the compositor sends
+    // an xdg_surface::configure event. The client MUST ack this configure
+    // (which the connection does automatically) and then commit the surface
+    // for the window to become visible.
+    //
+    // Without this handshake, the compositor will never show the surface.
+    // The initial commit in create_xdg_surface() triggers the compositor
+    // to send the configure, but we must process events to receive it.
+    // After receiving and acking, we commit again to present the surface.
+    if (!conn || !conn->is_connected()) return false;
+    if (m_xdg_surface_id == 0) return true;  // no xdg_surface, nothing to wait for
+
+    conn->m_xdg_configured = false;
+
+    int attempts = 0;
+    while (!conn->m_xdg_configured && attempts < 100) {
+        struct pollfd pfd;
+        pfd.fd = conn->get_fd();
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        int ret = ::poll(&pfd, 1, 5000);
+        if (ret <= 0) {
+            std::cerr << "Wayland: timeout waiting for xdg_surface configure" << std::endl;
+            break;
+        }
+
+        conn->recv_available();
+        conn->process_events();
+        attempts++;
+    }
+
+    if (!conn->m_xdg_configured) {
+        std::cerr << "Wayland: did not receive initial configure event" << std::endl;
+        return false;
+    }
+
+    // After acking the configure, we must commit the surface again
+    // to make the window visible on screen.
+    // wl_surface::commit (opcode 6)
+    conn->send_message(m_surface_id, 6, nullptr, 0);
+
+    std::cerr << "Wayland: initial configure received and acked" << std::endl;
+    return true;
+}
+
 bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
     if (!conn || !conn->is_connected()) return false;
     if (width <= 0 || height <= 0) return false;
@@ -1102,11 +1165,18 @@ bool WaylandSurface::create(WaylandConnection* conn, int width, int height) {
             std::cerr << "Wayland: failed to create xdg_surface" << std::endl;
             return false;
         }
+        // Wait for the initial configure event from the compositor.
+        // Without this handshake, the window will never appear on screen.
+        if (!wait_for_initial_configure(conn)) {
+            std::cerr << "Wayland: failed to complete initial configure handshake" << std::endl;
+            return false;
+        }
     } else {
         std::cerr << "Wayland: no xdg_wm_base, surface may not be visible" << std::endl;
     }
 
     m_initialized = true;
+    m_configured = true;
     std::cerr << "Wayland: surface created ok" << std::endl;
     return true;
 }

@@ -339,8 +339,10 @@ public:
     // Check if we have all required globals
     // Seat is optional - some compositors may not advertise it immediately,
     // and it is not needed for display-only purposes.
+    // xdg_wm_base is required: without it we cannot create a toplevel window
+    // and the surface will never appear on screen.
     bool has_globals() const {
-        return m_compositor_id != 0 && m_shm_id != 0;
+        return m_compositor_id != 0 && m_shm_id != 0 && m_xdg_wm_base_id != 0;
     }
 
     // Getters for global object IDs
@@ -431,6 +433,10 @@ private:
     // xdg_surface::configure event, it needs to ack it. The WaylandSurface
     // registers its xdg_surface_id here so the connection can dispatch.
     uint32_t m_event_xdg_surface_id;
+
+    // Set to true when an xdg_surface::configure event is received.
+    // WaylandSurface checks this in wait_for_initial_configure().
+    bool m_xdg_configured;
 
     // Pending events for the GUI layer
     std::vector<WaylandEvent> m_pending_events;
@@ -531,6 +537,7 @@ private:
     // Buffer state
     bool m_buffer_busy;       // true if compositor is using our buffer
     bool m_initialized;
+    bool m_configured;        // true after initial xdg_surface::configure received
 
     // Helper: create the shared memory pool and buffer
     bool create_shm_buffer(WaylandConnection* conn);
@@ -543,6 +550,12 @@ private:
 
     // Helper: generate a unique filename for shm_open
     static std::string shm_filename();
+
+    // Helper: wait for the initial xdg_surface::configure event from the
+    // compositor. The connection auto-acks configure events, but we need
+    // to process events until the configure arrives and then commit the
+    // surface to make the window visible.
+    bool wait_for_initial_configure(WaylandConnection* conn);
 };
 
 } // namespace chinstrap

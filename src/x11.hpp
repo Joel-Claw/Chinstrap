@@ -88,6 +88,7 @@ enum X11EventType {
     X11_EVENT_BUTTON_RELEASE = 5,
     X11_EVENT_MOTION = 6,
     X11_EVENT_CLOSE = 7,
+    X11_EVENT_MAP_NOTIFY = 8,
 };
 
 struct X11Event {
@@ -240,6 +241,15 @@ public:
 
     // Get the next event (returns true if an event was available)
     bool next_event(X11Connection* conn, X11Event* event);
+
+    // TEACHING NOTE: Wait for MapNotify event
+    // ====================================================================
+    // In rootless XWayland, after MapWindow the window manager must process
+    // the request and redirect the window through the compositor. If we call
+    // put_image before the MapNotify event arrives, the window may not be
+    // visible yet. This function blocks (with a timeout) until MapNotify
+    // is received, skipping any other events that arrive first.
+    bool wait_for_map_notify(X11Connection* conn);
 
     // Get the window XID
     uint32_t get_id() const { return m_window_id; }

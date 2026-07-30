@@ -126,6 +126,7 @@ enum X11EventTypeCode {
     X11_LeaveNotify_code     = 8,
     X11_FocusIn_code         = 9,
     X11_FocusOut_code        = 10,
+    X11_MapNotify_code       = 19,
     X11_Expose_code          = 12,
     X11_ClientMessage_code   = 33,
 };
@@ -787,6 +788,14 @@ bool X11Window::create(X11Connection* conn, int width, int height, const std::st
     // Flush all pending requests
     flush(conn);
 
+    // TEACHING NOTE: Wait for MapNotify in rootless XWayland
+    // ====================================================================
+    // In rootless XWayland, the window manager needs to process the
+    // MapWindow request before the window appears on screen. If we skip
+    // this step, put_image calls may go to a window that is not yet
+    // mapped, and no pixels will be visible.
+    wait_for_map_notify(conn);
+
     return true;
 }
 
@@ -1274,6 +1283,58 @@ bool X11Window::next_event(X11Connection* conn, X11Event* event) {
     return parse_event(raw, 32, event);
 }
 
+// TEACHING NOTE: Waiting for MapNotify in rootless XWayland
+// =========================================================================
+// In rootless XWayland, the window manager (which is the Wayland
+// compositor's XWayland bridge) needs to process the MapWindow request
+// before the window appears on screen. If we send PutImage immediately
+// after MapWindow, the window may not be mapped yet and the pixels go
+// nowhere visible.
+//
+// We block here (with a 2-second timeout) reading events from the X
+// server until we see a MapNotify event for our window. Any other events
+// (ConfigureNotify, Expose, etc.) that arrive first are skipped.
+// This is a blocking call but it should complete in milliseconds under
+// normal conditions.
+
+bool X11Window::wait_for_map_notify(X11Connection* conn) {
+    if (!conn || !conn->is_connected()) return false;
+
+    // Poll for events with a 2-second timeout total.
+    // We check repeatedly until we get MapNotify or time out.
+    for (int attempt = 0; attempt < 200; attempt++) {
+        struct pollfd pfd;
+        pfd.fd = conn->get_fd();
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        // 10ms per poll iteration, 200 iterations = 2 seconds total
+        int ret = ::poll(&pfd, 1, 10);
+        if (ret <= 0) continue;  // timeout or error, try again
+
+        // Read the 32-byte event
+        uint8_t raw[32];
+        try {
+            conn->receive(raw, 32);
+        } catch (...) {
+            return false;
+        }
+
+        X11Event event;
+        if (parse_event(raw, 32, &event)) {
+            if (event.type == X11_EVENT_MAP_NOTIFY) {
+                return true;
+            }
+            // Skip other events (ConfigureNotify, Expose, etc.)
+            // In a full implementation we would queue them for later.
+        }
+    }
+
+    // Timed out waiting for MapNotify
+    std::cerr << "X11: timed out waiting for MapNotify" << std::endl;
+    return false;
+}
+
 // TEACHING NOTE: Keycode to keysym mapping
 // =========================================================================
 // X11 keycodes are hardware-dependent scancode numbers. Keysyms are
@@ -1449,6 +1510,16 @@ bool X11Window::parse_event(const uint8_t* data, size_t len, X11Event* event) {
             // Check if the message type is WM_PROTOCOLS and the data is WM_DELETE_WINDOW
             // For simplicity, treat any ClientMessage as a close event
             event->type = X11_EVENT_CLOSE;
+            return true;
+        }
+        case X11_MapNotify_code: {
+            // MapNotify event:
+            //   0: type (19)
+            //   1-3: unused
+            //   4-7: event (window)
+            //   8-11: window
+            //   12-15: override_redirect
+            event->type = X11_EVENT_MAP_NOTIFY;
             return true;
         }
         default:
