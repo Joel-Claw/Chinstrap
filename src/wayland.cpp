@@ -439,12 +439,21 @@ ssize_t WaylandConnection::recv_available() {
     // We use a temporary buffer and append to m_recv_buf to avoid
     // excessive reallocations.
 
-    uint8_t tmp[4096];
-    ssize_t n = ::read(m_fd, tmp, sizeof(tmp));
-    if (n > 0) {
-        m_recv_buf.insert(m_recv_buf.end(), tmp, tmp + n);
+    // Read ALL available data, not just one chunk. The compositor may send
+    // many events in a single batch. A single read() might not get everything.
+    ssize_t total = 0;
+    while (true) {
+        uint8_t tmp[4096];
+        ssize_t n = ::read(m_fd, tmp, sizeof(tmp));
+        if (n > 0) {
+            m_recv_buf.insert(m_recv_buf.end(), tmp, tmp + n);
+            total += n;
+            if (n < (ssize_t)sizeof(tmp)) break;  // socket buffer likely drained
+        } else {
+            break;
+        }
     }
-    return n;
+    return total;
 }
 
 // TEACHING NOTE: Processing Wayland events
@@ -478,10 +487,14 @@ void WaylandConnection::process_events() {
         // Parse the header to get the message size
         uint32_t op_size = get_u32_le(&m_recv_buf[4]);
         uint16_t size = extract_size(op_size);
+        uint16_t opcode = extract_opcode(op_size);
+        uint32_t obj_id = get_u32_le(&m_recv_buf[0]);
 
         // The size includes the 8-byte header
         if (size < 8) {
             // Corrupted message - clear buffer and bail
+            std::cerr << "WL: corrupted message size=" << size
+                      << " buf_size=" << m_recv_buf.size() << std::endl;
             m_recv_buf.clear();
             break;
         }
@@ -490,6 +503,25 @@ void WaylandConnection::process_events() {
         if (m_recv_buf.size() < size) {
             // Not enough data yet - wait for more
             break;
+        }
+
+        // Debug: log every message for registry events
+        if (obj_id == m_registry_id && opcode == 0) {
+            // wl_registry::global - peek at the name and interface
+            const uint8_t* args = m_recv_buf.data() + 8;
+            size_t args_len = size - 8;
+            if (args_len >= 8) {
+                uint32_t gname = get_u32_le(&args[0]);
+                uint32_t ilen = get_u32_le(&args[4]);
+                std::string ifstr(reinterpret_cast<const char*>(&args[8]),
+                                  ilen > 1 ? ilen - 1 : 0);
+                std::cerr << "WL RAW: registry global name=" << gname
+                          << " iface=\"" << ifstr << "\""
+                          << " ilen=" << ilen
+                          << " msg_size=" << size
+                          << " buf_size=" << m_recv_buf.size()
+                          << std::endl;
+            }
         }
 
         // Process this message
