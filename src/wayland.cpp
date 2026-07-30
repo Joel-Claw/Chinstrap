@@ -370,13 +370,6 @@ void WaylandConnection::send_message(uint32_t object_id, uint16_t opcode,
         memcpy(&msg[8], payload, len);
     }
 
-    // Debug: hex dump the message
-    std::cerr << "WL SEND:";
-    for (size_t i = 0; i < total_size; i++) {
-        fprintf(stderr, " %02x", msg[i]);
-    }
-    std::cerr << " (obj=" << object_id << " op=" << opcode << " size=" << total_size << ")" << std::endl;
-
     if (fd >= 0) {
         // TEACHING NOTE: Sending file descriptors in Wayland
         // ====================================================================
@@ -487,14 +480,10 @@ void WaylandConnection::process_events() {
         // Parse the header to get the message size
         uint32_t op_size = get_u32_le(&m_recv_buf[4]);
         uint16_t size = extract_size(op_size);
-        uint16_t opcode = extract_opcode(op_size);
-        uint32_t obj_id = get_u32_le(&m_recv_buf[0]);
 
         // The size includes the 8-byte header
         if (size < 8) {
             // Corrupted message - clear buffer and bail
-            std::cerr << "WL: corrupted message size=" << size
-                      << " buf_size=" << m_recv_buf.size() << std::endl;
             m_recv_buf.clear();
             break;
         }
@@ -503,25 +492,6 @@ void WaylandConnection::process_events() {
         if (m_recv_buf.size() < size) {
             // Not enough data yet - wait for more
             break;
-        }
-
-        // Debug: log every message for registry events
-        if (obj_id == m_registry_id && opcode == 0) {
-            // wl_registry::global - peek at the name and interface
-            const uint8_t* args = m_recv_buf.data() + 8;
-            size_t args_len = size - 8;
-            if (args_len >= 8) {
-                uint32_t gname = get_u32_le(&args[0]);
-                uint32_t ilen = get_u32_le(&args[4]);
-                std::string ifstr(reinterpret_cast<const char*>(&args[8]),
-                                  ilen > 1 ? ilen - 1 : 0);
-                std::cerr << "WL RAW: registry global name=" << gname
-                          << " iface=\"" << ifstr << "\""
-                          << " ilen=" << ilen
-                          << " msg_size=" << size
-                          << " buf_size=" << m_recv_buf.size()
-                          << std::endl;
-            }
         }
 
         // Process this message
@@ -847,20 +817,20 @@ void WaylandConnection::handle_output_mode(uint32_t flags, int32_t width,
 }
 
 void WaylandConnection::send_xdg_pong(uint32_t serial) {
-    // xdg_wm_base::pong (opcode 0)
+    // xdg_wm_base::pong (opcode 3)
     // Args: serial (uint32)
     // Sent in response to xdg_wm_base::ping to prove the client is alive.
     if (m_xdg_wm_base_id == 0) return;
-    send_message(m_xdg_wm_base_id, 0, &serial, 4);
+    send_message(m_xdg_wm_base_id, 3, &serial, 4);
 }
 
 void WaylandConnection::send_xdg_ack_configure(uint32_t xdg_surface_id,
                                                   uint32_t serial) {
-    // xdg_surface::ack_configure (opcode 0)
+    // xdg_surface::ack_configure (opcode 4)
     // Args: serial (uint32)
     // Sent in response to xdg_surface::configure to acknowledge the
     // new configuration before committing.
-    send_message(xdg_surface_id, 0, &serial, 4);
+    send_message(xdg_surface_id, 4, &serial, 4);
 }
 
 bool WaylandConnection::roundtrip() {
@@ -1080,18 +1050,18 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     // serial that must be acknowledged via xdg_surface::ack_configure
     // before the next commit.
 
-    // Step 1: Create xdg_surface via xdg_wm_base::get_xdg_surface (opcode 0)
+    // Step 1: Create xdg_surface via xdg_wm_base::get_xdg_surface (opcode 2)
     m_xdg_surface_id = conn->allocate_id();
     uint8_t payload[8];
     put_u32_le(&payload[0], m_xdg_surface_id);  // new_id for xdg_surface
     put_u32_le(&payload[4], m_surface_id);       // wl_surface object
-    conn->send_message(conn->get_xdg_wm_base_id(), 0, payload, 8);
+    conn->send_message(conn->get_xdg_wm_base_id(), 2, payload, 8);
 
-    // Step 2: Create xdg_toplevel via xdg_surface::get_toplevel (opcode 0)
+    // Step 2: Create xdg_toplevel via xdg_surface::get_toplevel (opcode 1)
     m_xdg_toplevel_id = conn->allocate_id();
-    conn->send_message(m_xdg_surface_id, 0, &m_xdg_toplevel_id, 4);
+    conn->send_message(m_xdg_surface_id, 1, &m_xdg_toplevel_id, 4);
 
-    // Step 3: Set the title via xdg_toplevel::set_title (opcode 0)
+    // Step 3: Set the title via xdg_toplevel::set_title (opcode 1)
     // We use a default title; the caller can change it later via set_title().
     std::string default_title = "Chinstrap";
     size_t title_len = default_title.size();
@@ -1100,7 +1070,7 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     size_t title_payload_len = str_padded;
     std::vector<uint8_t> title_msg(8 + title_payload_len, 0);
     put_u32_le(&title_msg[0], m_xdg_toplevel_id);
-    put_u32_le(&title_msg[4], static_cast<uint32_t>(0) |
+    put_u32_le(&title_msg[4], static_cast<uint32_t>(1) |
                         (static_cast<uint32_t>(8 + title_payload_len) << 16));
     size_t pos = 8;
     put_u32_le(&title_msg[pos], static_cast<uint32_t>(title_len + 1));
@@ -1343,7 +1313,7 @@ void WaylandSurface::set_title(const std::string& title) {
     // extension (xdg_toplevel::set_title). We send the title string
     // to the xdg_toplevel object created during surface initialization.
     //
-    // Request: xdg_toplevel::set_title (opcode 0)
+    // Request: xdg_toplevel::set_title (opcode 1)
     // Args: string title (uint32 length + chars + null + padding)
 
     if (!m_initialized || !m_conn || m_xdg_toplevel_id == 0) return;
@@ -1356,8 +1326,8 @@ void WaylandSurface::set_title(const std::string& title) {
 
     std::vector<uint8_t> msg(total, 0);
     put_u32_le(&msg[0], m_xdg_toplevel_id);
-    put_u32_le(&msg[4], static_cast<uint32_t>(0) |
-                        (static_cast<uint32_t>(total) << 16));  // opcode=0
+    put_u32_le(&msg[4], static_cast<uint32_t>(1) |
+                        (static_cast<uint32_t>(total) << 16));  // opcode=1
 
     size_t pos = 8;
     put_u32_le(&msg[pos], static_cast<uint32_t>(title_len + 1));
