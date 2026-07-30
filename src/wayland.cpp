@@ -123,7 +123,7 @@ static inline uint16_t extract_size(uint32_t opcode_size) {
 
 WaylandConnection::WaylandConnection()
     : m_fd(-1)
-    , m_next_id(1000)  // Client-side IDs start at 1000
+    , m_next_id(2)  // Client-side IDs start at 2 (wl_display is ID 1)
     , m_registry_id(0)
     , m_compositor_id(0)
     , m_shm_id(0)
