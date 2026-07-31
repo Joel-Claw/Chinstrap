@@ -1011,16 +1011,62 @@ bool WaylandSurface::create_shm_buffer(WaylandConnection* conn) {
     // Args: new_id pool (uint32), fd (file descriptor), size (int32)
     m_pool_id = conn->allocate_id();
 
-    // Build the payload: new_id (4) + size (4) = 8 bytes
-    // The fd is sent as ancillary data
-    uint8_t payload[8];
-    // new_id for the pool
-    put_u32_le(&payload[0], m_pool_id);
-    // size of the shared memory region
-    put_u32_le(&payload[4], static_cast<uint32_t>(m_shm_size));
+    // Create the wl_shm_pool
+    // wl_shm::create_pool (opcode 0)
+    // Args: new_id pool (uint32), fd (file descriptor), size (int32)
+    //
+    // TEACHING NOTE: File descriptors in Wayland wire format
+    // ====================================================================
+    // In the Wayland wire format, file descriptors are sent as ancillary
+    // data (SCM_RIGHTS) but do NOT consume space in the payload. The
+    // compositor reads arguments in order: new_id from payload, fd from
+    // ancillary data, size from payload. The fd is matched by position,
+    // not by bytes in the message body.
+    //
+    // However, the fd MUST be sent in the SAME sendmsg() call as the
+    // payload. If the fd is sent separately, the compositor will not
+    // associate it with this request.
+    m_pool_id = conn->allocate_id();
 
-    // Send the create_pool request with the fd
-    conn->send_message(conn->get_shm_id(), 0, payload, 8, m_shm_fd);
+    // Build the payload: new_id (4) + size (4) = 8 bytes
+    // The fd is sent as ancillary data in the same message.
+    uint8_t pool_payload[8];
+    put_u32_le(&pool_payload[0], m_pool_id);
+    put_u32_le(&pool_payload[4], static_cast<uint32_t>(m_shm_size));
+
+    // Send the create_pool request with the fd via sendmsg
+    conn->send_message(conn->get_shm_id(), 0, pool_payload, 8, m_shm_fd);
+
+    // Do a round-trip to ensure the pool is created before we create
+    // the buffer. Without this, the compositor may not have processed
+    // the create_pool request when we send create_buffer, causing it
+    // to reject the buffer (stride 0 error because pool doesn't exist yet).
+    {
+        uint32_t sync_cb = conn->allocate_id();
+        conn->m_sync_done = false;
+        conn->send_message(1, 0, &sync_cb, 4);  // wl_display::sync
+
+        bool sync_done = false;
+        int sync_attempts = 0;
+        while (!sync_done && sync_attempts < 50) {
+            struct pollfd pfd;
+            pfd.fd = conn->get_fd();
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+
+            int ret = ::poll(&pfd, 1, 5000);
+            if (ret <= 0) break;
+            if (!(pfd.revents & POLLIN)) break;
+
+            conn->recv_available();
+            // Process events, looking for our sync callback
+            conn->process_events();
+            if (conn->m_sync_done) {
+                sync_done = true;
+            }
+            sync_attempts++;
+        }
+    }
 
     // Create the wl_buffer from the pool
     // wl_shm_pool::create_buffer (opcode 0)
