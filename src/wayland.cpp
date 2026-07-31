@@ -973,17 +973,17 @@ bool WaylandSurface::create_shm_buffer(WaylandConnection* conn) {
     // we use a single buffer and wait for release before reusing.
     m_shm_size = static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4;
 
-    // Create the shared memory file
-    std::string name = shm_filename();
-    m_shm_fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+    // Create the shared memory file using memfd_create.
+    // TEACHING NOTE: memfd_create creates an anonymous in-memory file
+    // that can be shared between processes via file descriptor passing.
+    // This is preferred over shm_open because it doesn't require a
+    // name and doesn't need unlinking. Reference: geemili.xyz/wayland-wire
+    m_shm_fd = ::memfd_create("chinstrap-shm", 0);
     if (m_shm_fd < 0) {
+        std::cerr << "Wayland: memfd_create failed: " << strerror(errno) << std::endl;
         return false;
     }
-
-    // Unlink immediately - the fd remains valid, but the name is removed
-    // so no other process can accidentally open it. This is the standard
-    // pattern for anonymous shared memory.
-    ::shm_unlink(name.c_str());
+    std::cerr << "Wayland: memfd_create ok, fd=" << m_shm_fd << std::endl;
 
     // Set the size of the shared memory object
     if (::ftruncate(m_shm_fd, static_cast<off_t>(m_shm_size)) < 0) {
@@ -1009,71 +1009,59 @@ bool WaylandSurface::create_shm_buffer(WaylandConnection* conn) {
     // Create the wl_shm_pool
     // wl_shm::create_pool (opcode 0)
     // Args: new_id pool (uint32), fd (file descriptor), size (int32)
-    m_pool_id = conn->allocate_id();
-
-    // Create the wl_shm_pool
-    // wl_shm::create_pool (opcode 0)
-    // Args: new_id pool (uint32), fd (file descriptor), size (int32)
     //
     // TEACHING NOTE: File descriptors in Wayland wire format
     // ====================================================================
-    // In the Wayland wire format, file descriptors are sent as ancillary
-    // data (SCM_RIGHTS) but do NOT consume space in the payload. The
-    // compositor reads arguments in order: new_id from payload, fd from
-    // ancillary data, size from payload. The fd is matched by position,
-    // not by bytes in the message body.
-    //
-    // However, the fd MUST be sent in the SAME sendmsg() call as the
-    // payload. If the fd is sent separately, the compositor will not
-    // associate it with this request.
+    // In the Wayland wire format, fd arguments are "0-bit" values on the
+    // primary transport. They do NOT consume payload bytes. The fd is sent
+    // as ancillary data (SCM_RIGHTS) via sendmsg, and the compositor matches
+    // it by position. So the payload is just new_id + size.
+    // Reference: https://geemili.xyz/wayland-wire/ (working code)
     m_pool_id = conn->allocate_id();
 
-    // Build the payload: new_id (4) + fd_placeholder (4) + size (4) = 12 bytes
-    // TEACHING NOTE: In the Wayland wire format, file descriptor arguments
-    // consume 4 bytes in the payload as a placeholder, even though the actual
-    // fd is sent as ancillary data (SCM_RIGHTS). The compositor reads
-    // arguments in order from the payload, and when it encounters an fd
-    // argument, it reads the next fd from the ancillary data. The 4-byte
-    // placeholder in the payload is ignored by the compositor but is needed
-    // to keep the argument positions aligned.
-    uint8_t pool_payload[12];
-    put_u32_le(&pool_payload[0], m_pool_id);                         // new_id
-    put_u32_le(&pool_payload[4], 0);                                  // fd placeholder (ignored)
-    put_u32_le(&pool_payload[8], static_cast<uint32_t>(m_shm_size)); // size
+    // Build the payload: new_id (4) + size (4) = 8 bytes
+    uint8_t pool_payload[8];
+    put_u32_le(&pool_payload[0], m_pool_id);
+    put_u32_le(&pool_payload[4], static_cast<uint32_t>(m_shm_size));
 
     // Send the create_pool request with the fd via sendmsg
-    conn->send_message(conn->get_shm_id(), 0, pool_payload, 12, m_shm_fd);
+    std::cerr << "Wayland: create_pool: shm_id=" << conn->get_shm_id()
+              << " pool_id=" << m_pool_id
+              << " size=" << m_shm_size
+              << " fd=" << m_shm_fd << std::endl;
+    conn->send_message(conn->get_shm_id(), 0, pool_payload, 8, m_shm_fd);
 
     // Do a round-trip to ensure the pool is created before we create
     // the buffer. Without this, the compositor may not have processed
     // the create_pool request when we send create_buffer, causing it
     // to reject the buffer (stride 0 error because pool doesn't exist yet).
-    {
-        uint32_t sync_cb = conn->allocate_id();
-        conn->m_sync_done = false;
-        conn->send_message(1, 0, &sync_cb, 4);  // wl_display::sync
+    //
+    // TEACHING NOTE: We must use conn->m_sync_callback_id (not a local
+    // variable) because process_events() checks m_sync_callback_id to
+    // decide whether to set m_sync_done. Using a local ID would mean
+    // the sync callback event is never matched, and m_sync_done never
+    // becomes true.
+    conn->m_sync_callback_id = conn->allocate_id();
+    conn->m_sync_done = false;
+    conn->send_message(1, 0, &conn->m_sync_callback_id, 4);  // wl_display::sync
 
-        bool sync_done = false;
-        int sync_attempts = 0;
-        while (!sync_done && sync_attempts < 50) {
-            struct pollfd pfd;
-            pfd.fd = conn->get_fd();
-            pfd.events = POLLIN;
-            pfd.revents = 0;
+    int sync_attempts = 0;
+    while (!conn->m_sync_done && sync_attempts < 50) {
+        struct pollfd pfd;
+        pfd.fd = conn->get_fd();
+        pfd.events = POLLIN;
+        pfd.revents = 0;
 
-            int ret = ::poll(&pfd, 1, 5000);
-            if (ret <= 0) break;
-            if (!(pfd.revents & POLLIN)) break;
+        int ret = ::poll(&pfd, 1, 5000);
+        if (ret <= 0) break;
+        if (!(pfd.revents & POLLIN)) break;
 
-            conn->recv_available();
-            // Process events, looking for our sync callback
-            conn->process_events();
-            if (conn->m_sync_done) {
-                sync_done = true;
-            }
-            sync_attempts++;
-        }
+        conn->recv_available();
+        conn->process_events();
+        sync_attempts++;
     }
+    std::cerr << "Wayland: sync round-trip done=" << conn->m_sync_done
+              << " attempts=" << sync_attempts << std::endl;
 
     // Create the wl_buffer from the pool
     // wl_shm_pool::create_buffer (opcode 0)
