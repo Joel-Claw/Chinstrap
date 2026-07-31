@@ -1028,14 +1028,21 @@ bool WaylandSurface::create_shm_buffer(WaylandConnection* conn) {
     // associate it with this request.
     m_pool_id = conn->allocate_id();
 
-    // Build the payload: new_id (4) + size (4) = 8 bytes
-    // The fd is sent as ancillary data in the same message.
-    uint8_t pool_payload[8];
-    put_u32_le(&pool_payload[0], m_pool_id);
-    put_u32_le(&pool_payload[4], static_cast<uint32_t>(m_shm_size));
+    // Build the payload: new_id (4) + fd_placeholder (4) + size (4) = 12 bytes
+    // TEACHING NOTE: In the Wayland wire format, file descriptor arguments
+    // consume 4 bytes in the payload as a placeholder, even though the actual
+    // fd is sent as ancillary data (SCM_RIGHTS). The compositor reads
+    // arguments in order from the payload, and when it encounters an fd
+    // argument, it reads the next fd from the ancillary data. The 4-byte
+    // placeholder in the payload is ignored by the compositor but is needed
+    // to keep the argument positions aligned.
+    uint8_t pool_payload[12];
+    put_u32_le(&pool_payload[0], m_pool_id);                         // new_id
+    put_u32_le(&pool_payload[4], 0);                                  // fd placeholder (ignored)
+    put_u32_le(&pool_payload[8], static_cast<uint32_t>(m_shm_size)); // size
 
     // Send the create_pool request with the fd via sendmsg
-    conn->send_message(conn->get_shm_id(), 0, pool_payload, 8, m_shm_fd);
+    conn->send_message(conn->get_shm_id(), 0, pool_payload, 12, m_shm_fd);
 
     // Do a round-trip to ensure the pool is created before we create
     // the buffer. Without this, the compositor may not have processed
