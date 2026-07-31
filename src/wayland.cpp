@@ -219,7 +219,7 @@ bool WaylandConnection::connect() {
     send_message(1, 0, &m_sync_callback_id, 4);
 
     // Process events until sync callback is done.
-    // We do up to 10 round-trips to be safe (in case of reentrancy).
+    // We do up to 100 iterations to be safe (in case of reentrancy).
     int attempts = 0;
     while (!m_sync_done && attempts < 100) {
         // Wait for data
@@ -233,8 +233,19 @@ bool WaylandConnection::connect() {
             // Timeout or error
             break;
         }
-
-        recv_available();
+        if (pfd.revents & (POLLHUP | POLLERR)) {
+            std::cerr << "Wayland: compositor closed connection during initial roundtrip"
+                      << std::endl;
+            break;
+        }
+        if (!(pfd.revents & POLLIN)) {
+            break;
+        }
+        ssize_t n = recv_available();
+        if (n < 0) {
+            std::cerr << "Wayland: connection lost during initial roundtrip" << std::endl;
+            break;
+        }
         process_events();
         attempts++;
     }
@@ -265,7 +276,10 @@ bool WaylandConnection::connect() {
             pfd.revents = 0;
             int ret = ::poll(&pfd, 1, 5000);
             if (ret <= 0) break;
-            recv_available();
+            if (pfd.revents & (POLLHUP | POLLERR)) break;
+            if (!(pfd.revents & POLLIN)) break;
+            ssize_t n = recv_available();
+            if (n < 0) break;
             process_events();
             mode_attempts++;
         }
@@ -429,21 +443,36 @@ ssize_t WaylandConnection::recv_available() {
     // The data is appended to m_recv_buf. Later, process_events() will
     // parse complete messages from this buffer.
     //
-    // We use a temporary buffer and append to m_recv_buf to avoid
-    // excessive reallocations.
+    // We use ::recv() with MSG_DONTWAIT instead of ::read() because the
+    // socket is in blocking mode. MSG_DONTWAIT makes this single call
+    // non-blocking without changing the socket flags. When the socket
+    // buffer is drained, recv() returns -1 with EAGAIN/EWOULDBLOCK,
+    // which tells us to stop reading and come back later.
+    //
+    // If recv() returns 0, the compositor has closed the connection.
+    // We return -1 to signal the caller that the connection is dead.
 
-    // Read ALL available data, not just one chunk. The compositor may send
-    // many events in a single batch. A single read() might not get everything.
     ssize_t total = 0;
     while (true) {
         uint8_t tmp[4096];
-        ssize_t n = ::read(m_fd, tmp, sizeof(tmp));
+        ssize_t n = ::recv(m_fd, tmp, sizeof(tmp), MSG_DONTWAIT);
         if (n > 0) {
             m_recv_buf.insert(m_recv_buf.end(), tmp, tmp + n);
             total += n;
-            if (n < (ssize_t)sizeof(tmp)) break;  // socket buffer likely drained
+            // Keep reading if we filled the buffer — more may be available.
+            if (n < (ssize_t)sizeof(tmp)) break;
+        } else if (n == 0) {
+            // Compositor closed the connection (EOF).
+            return -1;
         } else {
-            break;
+            // n < 0: check errno
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // No more data available right now — this is normal.
+                break;
+            }
+            // Real error (EINTR is not expected with MSG_DONTWAIT, but handle it).
+            if (errno == EINTR) continue;
+            return -1;
         }
     }
     return total;
@@ -531,9 +560,6 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
     size_t args_len = len - 8;
 
     // Dispatch based on object ID
-    std::cerr << "WL EVT: obj=" << obj_id << " op=" << opcode
-              << " size=" << len << " args=" << args_len << std::endl;
-
     if (obj_id == 1) {
         // wl_display events
         // opcode 0 = error, opcode 1 = delete_id
@@ -647,7 +673,7 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
         if (opcode == 0) {
             // xdg_wm_base::ping
             // Args: serial (uint32)
-            // We must respond with xdg_wm_base::pong (opcode 0)
+            // We must respond with xdg_wm_base::pong (opcode 3)
             if (args_len >= 4) {
                 uint32_t serial = get_u32_le(&args[0]);
                 send_xdg_pong(serial);
@@ -659,7 +685,7 @@ size_t WaylandConnection::process_one_message(const uint8_t* data, size_t len) {
         if (opcode == 0) {
             // xdg_surface::configure
             // Args: serial (uint32)
-            // We must respond with xdg_surface::ack_configure (opcode 0)
+            // We must respond with xdg_surface::ack_configure (opcode 4)
             if (args_len >= 4) {
                 uint32_t serial = get_u32_le(&args[0]);
                 send_xdg_ack_configure(m_event_xdg_surface_id, serial);
@@ -855,7 +881,19 @@ bool WaylandConnection::roundtrip() {
             m_sync_callback_id = old_cb;
             return false;
         }
-        recv_available();
+        if (pfd.revents & (POLLHUP | POLLERR)) {
+            m_sync_callback_id = old_cb;
+            return false;
+        }
+        if (!(pfd.revents & POLLIN)) {
+            m_sync_callback_id = old_cb;
+            return false;
+        }
+        ssize_t n = recv_available();
+        if (n < 0) {
+            m_sync_callback_id = old_cb;
+            return false;
+        }
         process_events();
     }
 
@@ -1034,15 +1072,15 @@ bool WaylandSurface::create_xdg_surface(WaylandConnection* conn) {
     // screen. The process is:
     //
     // 1. Create an xdg_surface from the wl_surface:
-    //    xdg_wm_base::get_xdg_surface (opcode 0)
+    //    xdg_wm_base::get_xdg_surface (opcode 2)
     //    Args: new_id xdg_surface, object wl_surface
     //
     // 2. Create an xdg_toplevel from the xdg_surface:
-    //    xdg_surface::get_toplevel (opcode 0)
+    //    xdg_surface::get_toplevel (opcode 1)
     //    Args: new_id xdg_toplevel (no other args except header)
     //
     // 3. Set the window title:
-    //    xdg_toplevel::set_title (opcode 0)
+    //    xdg_toplevel::set_title (opcode 1)
     //    Args: string title
     //
     // 4. Commit the surface to make it visible:
@@ -1135,10 +1173,29 @@ bool WaylandSurface::wait_for_initial_configure(WaylandConnection* conn) {
             break;
         }
 
-        conn->recv_available();
-        // Temp debug: log buffer size during configure wait
-        std::cerr << "Wayland: configure wait attempt " << attempts
-                  << " recv_buf=" << conn->m_recv_buf.size() << std::endl;
+        // Check for hangup or error BEFORE reading.
+        // If the compositor closed the connection, poll returns >0 with
+        // POLLHUP and/or POLLERR set but POLLIN may not be set. Reading
+        // from a closed socket returns 0 (EOF) forever, causing the loop.
+        if (pfd.revents & (POLLHUP | POLLERR)) {
+            std::cerr << "Wayland: compositor closed connection during configure wait"
+                      << std::endl;
+            break;
+        }
+
+        if (!(pfd.revents & POLLIN)) {
+            // poll returned >0 but POLLIN is not set — unexpected, bail out.
+            std::cerr << "Wayland: unexpected poll revents=0x" << std::hex
+                      << pfd.revents << std::dec << " during configure wait"
+                      << std::endl;
+            break;
+        }
+
+        ssize_t n = conn->recv_available();
+        if (n < 0) {
+            std::cerr << "Wayland: connection lost during configure wait" << std::endl;
+            break;
+        }
         conn->process_events();
         attempts++;
     }
