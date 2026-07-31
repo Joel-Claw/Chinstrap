@@ -1077,6 +1077,19 @@ bool WaylandSurface::create_shm_buffer(WaylandConnection* conn) {
     put_u32_le(&buf_payload[16], static_cast<uint32_t>(m_width * 4)); // stride
     put_u32_le(&buf_payload[20], WL_SHM_FORMAT_XRGB8888);           // format
 
+    std::cerr << "Wayland: create_buffer: pool_id=" << m_pool_id
+              << " buffer_id=" << m_buffer_id
+              << " width=" << m_width
+              << " height=" << m_height
+              << " stride=" << m_width * 4
+              << " format=" << WL_SHM_FORMAT_XRGB8888 << std::endl;
+    // Hex dump of payload for debugging
+    std::cerr << "Wayland: create_buffer payload hex:";
+    for (int i = 0; i < 24; i++) {
+        fprintf(stderr, " %02x", buf_payload[i]);
+    }
+    std::cerr << std::endl;
+
     conn->send_message(m_pool_id, 0, buf_payload, 24);
 
     return true;
